@@ -4,20 +4,39 @@ Text normalization for OCR vs reference comparison.
 import re
 import unicodedata
 
-# Placeholder patterns:
-#   %anything%        — template variables
-#   [identifier]      — subscriber vars like [firstname]
-#   <lowercase_var>   — only lowercase/underscore vars like <date>, <firstname>
-#                       CTA buttons like <BUY TOKENS> are NOT placeholders
-_PLACEHOLDER_PCT     = re.compile(r"%[^%]+%")
-_PLACEHOLDER_BRACKET = re.compile(r"\[[^\]]+\]")
-_PLACEHOLDER_ANGLE   = re.compile(r"<[a-z_][a-z0-9_ ]*>")   # only lowercase = variables
+# ── Placeholder whitelist ────────────────────────────────────────────────────
+# Only these known variable names are treated as placeholders and removed
+# during soft normalization. Everything else (CTA buttons, UI labels) is kept.
+_PLACEHOLDER_NAMES = frozenset({
+    "skin",
+    "displayname",
+    "username",
+    "subscriber_firstname_capitalized",
+    "first_name",
+    "bonus_amount",
+    "date",
+})
+
+_PH_PCT     = re.compile(r"%([^%]+)%")
+_PH_BRACKET = re.compile(r"\[([^\]]+)\]")
+_PH_ANGLE   = re.compile(r"<([^>]+)>")
+
+
+def _is_placeholder_name(name: str) -> bool:
+    return name.strip().lower() in _PLACEHOLDER_NAMES
 
 
 def _remove_placeholders(text: str) -> str:
-    text = _PLACEHOLDER_PCT.sub(" ", text)
-    text = _PLACEHOLDER_BRACKET.sub(" ", text)
-    text = _PLACEHOLDER_ANGLE.sub(" ", text)
+    """Remove only whitelisted placeholder tokens; leave everything else intact."""
+    text = _PH_PCT.sub(
+        lambda m: " " if _is_placeholder_name(m.group(1)) else m.group(0), text
+    )
+    text = _PH_BRACKET.sub(
+        lambda m: " " if _is_placeholder_name(m.group(1)) else m.group(0), text
+    )
+    text = _PH_ANGLE.sub(
+        lambda m: " " if _is_placeholder_name(m.group(1)) else m.group(0), text
+    )
     return text
 
 
@@ -27,31 +46,29 @@ def _collapse_whitespace(text: str) -> str:
 
 def _pre_clean(text: str) -> str:
     """
-    Pre-clean: remove emoji, arrows, BiDi marks; normalize dashes/spaces/quotes.
+    Pre-clean: remove emoji, arrows/bullets, BiDi marks;
+    normalise dashes, spaces, and quotes to ASCII equivalents.
     """
     # Emoji & pictographic ranges
     text = re.sub(
         "[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U00002B00-\U00002BFF\uFE00-\uFE0F]",
-        "", text
+        "", text,
     )
-    # All geometric shapes block (U+25B0-U+25FF) — covers ►▸▶▷◆◈◉○●□■▪▫ etc.
-    # Dingbat arrows (U+27A0-U+27BF) — covers ➢➤➨ etc.
+    # Geometric shapes (U+25B0-U+25FF) — ►▸▶▷◆ etc.
+    # Dingbat arrows  (U+27A0-U+27BF) — ➢➤➨ etc.
     # Standard arrows (U+2190-U+21FF)
-    # Bullets and middle dot
+    # Bullet / middle dot
     text = re.sub(
-        r"[\u25B0-\u25FF"   # geometric shapes (includes ▶►▸▷◆ etc.)
-        r"\u27A0-\u27BF"    # dingbat arrows
-        r"\u2190-\u21FF"    # arrows block
-        r"\u2022\u00B7]",   # bullet •, middle dot ·
-        "", text
+        r"[\u25B0-\u25FF\u27A0-\u27BF\u2190-\u21FF\u2022\u00B7]",
+        "", text,
     )
-    # BiDi / LTR-RTL embedding marks (very common in Arabic/Hebrew DOCX)
+    # BiDi / LTR-RTL embedding marks (common in Arabic/Hebrew DOCX)
     text = re.sub(r"[\u200E\u200F\u202A\u202B\u202C\u202D\u202E]", "", text)
-    # Unicode spaces -> regular space
+    # Unicode spaces → regular space
     text = re.sub(r"[\xa0\u202f\u2009\u2007\u2008\u200a\u3000\u1680\u180e]", " ", text)
-    # Dashes -> hyphen
+    # Dashes → hyphen
     text = re.sub(r"[\u2013\u2014\u2015\u2012\u2011]", "-", text)
-    # Smart quotes -> straight
+    # Smart quotes → straight
     text = text.replace("\u201c", '"').replace("\u201d", '"')
     text = text.replace("\u2018", "'").replace("\u2019", "'")
     text = text.replace("\u00ab", '"').replace("\u00bb", '"')
@@ -59,29 +76,22 @@ def _pre_clean(text: str) -> str:
     # Soft hyphen, zero-width chars
     text = text.replace("\u00ad", "")
     text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
-    # Ellipsis character -> three dots
+    # Ellipsis character → three dots
     text = text.replace("\u2026", "...")
     return text
 
 
 def normalize_strict(text: str) -> str:
     """
-    Normalize for strict comparison. Lowercase, strip punctuation, collapse whitespace.
-    Does NOT remove placeholders.
-
-    Order matters:
-    1. Unicode normalize (NFC)
-    2. Pre-clean (emoji, symbols, dashes, quotes, BiDi marks)
-    3. Collapse spaces (pre_clean may leave extra whitespace)
-    4. Lowercase
-    5. Remove punctuation (keep only word chars and spaces)
-    6. Final whitespace collapse
+    Normalize for strict comparison.
+    Pipeline: NFC → pre_clean → lowercase → strip punctuation → collapse whitespace.
+    Does NOT remove placeholder tokens (they become plain words after lowercasing).
+    Case is ignored: comparison is always case-insensitive.
     """
     if not text:
         return ""
     text = unicodedata.normalize("NFC", text)
     text = _pre_clean(text)
-    text = _collapse_whitespace(text)
     text = text.lower()
     text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
     text = _collapse_whitespace(text)
@@ -89,12 +99,14 @@ def normalize_strict(text: str) -> str:
 
 
 def normalize_soft(text: str) -> str:
-    """Same as strict but also removes placeholder tokens."""
+    """
+    Same as normalize_strict but also removes whitelisted placeholder tokens
+    (%displayname%, [subscriber_firstname_capitalized], <date>, etc.).
+    """
     if not text:
         return ""
     text = unicodedata.normalize("NFC", text)
     text = _pre_clean(text)
-    text = _collapse_whitespace(text)
     text = text.lower()
     text = _remove_placeholders(text)
     text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
@@ -104,9 +116,9 @@ def normalize_soft(text: str) -> str:
 
 def clean_for_display(text: str) -> str:
     """
-    Clean reference text for display in UI:
-    remove emoji, arrows, BiDi marks, placeholders.
-    Preserves case and punctuation for readability.
+    Clean reference text for display in the UI.
+    Removes emoji, arrows, BiDi marks, and whitelisted placeholders.
+    Preserves original case and punctuation for readability.
     """
     if not text:
         return ""
@@ -118,9 +130,14 @@ def clean_for_display(text: str) -> str:
 
 
 def has_placeholder(text: str) -> bool:
-    """Return True if text contains any placeholder pattern."""
-    return bool(
-        _PLACEHOLDER_PCT.search(text)
-        or _PLACEHOLDER_BRACKET.search(text)
-        or _PLACEHOLDER_ANGLE.search(text)
-    )
+    """Return True if text contains at least one whitelisted placeholder token."""
+    for m in _PH_PCT.finditer(text):
+        if _is_placeholder_name(m.group(1)):
+            return True
+    for m in _PH_BRACKET.finditer(text):
+        if _is_placeholder_name(m.group(1)):
+            return True
+    for m in _PH_ANGLE.finditer(text):
+        if _is_placeholder_name(m.group(1)):
+            return True
+    return False

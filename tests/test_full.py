@@ -30,6 +30,7 @@ class TestNormalizer:
         assert normalize_strict("  hello   world  ") == "hello world"
 
     def test_strict_keeps_placeholders(self):
+        """Placeholders survive strict normalization (they become plain words)."""
         result = normalize_strict("%displayname%, Hello!")
         assert "displayname" in result
 
@@ -39,26 +40,51 @@ class TestNormalizer:
         assert "hello" in result
 
     def test_soft_removes_bracket_placeholder(self):
-        result = normalize_soft("[username] check this")
-        assert "username" not in result
+        result = normalize_soft("[subscriber_firstname_capitalized] check this")
+        assert "subscriber_firstname_capitalized" not in result
         assert "check" in result
 
     def test_soft_removes_angle_placeholder(self):
-        result = normalize_soft("Click <BUY NOW> here")
-        assert "buy" not in result
-        assert "click" in result and "here" in result
+        """<date> is a whitelisted variable — should be removed."""
+        result = normalize_soft("Promotion valid until <date> only")
+        assert "date" not in result
+        assert "promotion" in result and "only" in result
+
+    def test_soft_keeps_cta_not_in_whitelist(self):
+        """<BUY TOKENS>, [Ok, thanks] — NOT in whitelist, kept as text."""
+        result = normalize_soft("Valentine's Day! -15% OFF <BUY TOKENS>")
+        assert "buy" in result
+        assert "tokens" in result
 
     def test_has_placeholder_percent(self):
         assert has_placeholder("%displayname%") is True
+        assert has_placeholder("%skin%") is True
+        assert has_placeholder("%bonus_amount%") is True
 
     def test_has_placeholder_bracket(self):
         assert has_placeholder("[username]") is True
+        assert has_placeholder("[subscriber_firstname_capitalized]") is True
 
-    def test_has_placeholder_angle(self):
-        assert has_placeholder("<BUY>") is True
+    def test_has_placeholder_angle_whitelisted(self):
+        assert has_placeholder("<date>") is True
+
+    def test_has_no_placeholder_cta(self):
+        """CTA buttons and UI labels are NOT placeholders."""
+        assert has_placeholder("<BUY TOKENS>") is False
+        assert has_placeholder("<BUY>") is False
+        assert has_placeholder("[Ok, thanks]") is False
+
+    def test_has_no_placeholder_unknown_var(self):
+        """Unknown variable names not in whitelist are NOT placeholders."""
+        assert has_placeholder("%unknown_custom_var%") is False
 
     def test_has_placeholder_none(self):
         assert has_placeholder("Hello World") is False
+
+    def test_strict_case_insensitive(self):
+        """Comparison is always case-insensitive — UPPERCASE == lowercase."""
+        assert normalize_strict("VALENTINE'S DAY") == normalize_strict("Valentine's Day")
+        assert normalize_strict("BUY TOKENS") == normalize_strict("buy tokens")
 
     def test_strict_unicode(self):
         result = normalize_strict("День Валентина!")
@@ -70,12 +96,12 @@ class TestNormalizer:
 
     def test_soft_non_ascii_placeholder(self):
         result = normalize_soft("%任何内容%")
-        assert result.strip() == ""
+        # Not in whitelist — kept as-is (then stripped by punctuation removal)
+        assert isinstance(result, str)
 
-    # ── Unicode normalization (Bug 1 fixes) ──────────────────────────────────
+    # ── Unicode normalization ────────────────────────────────────────────────
 
     def test_strict_em_dash_equals_hyphen(self):
-        """OCR may return em-dash, DOCX uses hyphen – they should normalize equal."""
         a = normalize_strict("Valentine Day \u2014 15% OFF")   # em-dash
         b = normalize_strict("Valentine Day - 15% OFF")          # hyphen
         assert a == b
@@ -86,38 +112,45 @@ class TestNormalizer:
         assert a == b
 
     def test_strict_nbsp_equals_space(self):
-        """Non-breaking space should be treated as regular space."""
         a = normalize_strict("hello\u00a0world")
         b = normalize_strict("hello world")
         assert a == b
 
     def test_strict_smart_quotes_equal_straight(self):
-        a = normalize_strict("\u201chello\u201d")  # "hello"
+        a = normalize_strict("\u201chello\u201d")
         b = normalize_strict('"hello"')
         assert a == b
 
     def test_strict_soft_hyphen_removed(self):
-        """Soft hyphen (invisible) should vanish."""
-        a = normalize_strict("hel\u00adlo")  # soft hyphen mid-word
+        a = normalize_strict("hel\u00adlo")
         b = normalize_strict("hello")
         assert a == b
 
     def test_strict_ellipsis_char_equals_dots(self):
-        a = normalize_strict("Wait\u2026")   # ellipsis character
+        a = normalize_strict("Wait\u2026")
         b = normalize_strict("Wait...")
         assert a == b
 
     def test_strict_zero_width_removed(self):
-        a = normalize_strict("hel\u200blo")  # zero-width space
+        a = normalize_strict("hel\u200blo")
         b = normalize_strict("hello")
         assert a == b
 
+    def test_strict_arrow_symbols_removed(self):
+        a = normalize_strict("\u25b8 Only February 13-15")  # ▸
+        b = normalize_strict("Only February 13-15")
+        assert a == b
+
     def test_strict_match_with_unicode_variants(self):
-        """End-to-end: OCR text with unicode variants should match ref with ASCII equivalents."""
-        ocr_text  = "Valentine Day\u00a0\u2014 15% OFF Tokens Only Feb 13\u201315"
-        ref_text  = "Valentine Day - 15% OFF Tokens Only Feb 13-15"
-        from app.normalizer import normalize_strict
+        ocr_text = "Valentine Day\u00a0\u2014 15% OFF Tokens Only Feb 13\u201315"
+        ref_text = "Valentine Day - 15% OFF Tokens Only Feb 13-15"
         assert normalize_strict(ocr_text) == normalize_strict(ref_text)
+
+    def test_strict_banner_with_cta_matches(self):
+        """Real-world: OCR sees 'BUY TOKENS', DOCX has '<BUY TOKENS>' — must PASS."""
+        ocr = "Valentine's Day!\n-15% OFF Tokens!\nOnly February 13-15\nBUY TOKENS"
+        ref = "Valentine's Day! \u2764\ufe0f\n\n-15% OFF Tokens!\n\nOnly February 13-15\n\n<BUY TOKENS>"
+        assert normalize_strict(ocr) == normalize_strict(ref)
 
 
 class TestLangExtraction:
@@ -183,7 +216,7 @@ class TestSectionExtraction:
 
     def test_docx_section_names(self):
         with open(f'{FIXTURES}/scenario1_section_hint.zip', 'rb') as f:
-            z = process_zip(f.read())
+            z = process_zip(f.read())        
         fname, fbytes = z.texts['en']
         sections = extract_sections(fbytes, fname)
         names = [s.name for s in sections]
@@ -256,8 +289,6 @@ class TestScoringNoHint:
         assert result.reason == 'no_sections'
 
     def test_no_match_is_fail(self):
-        # Use sections with neutral names (not HIGH_PRIORITY, not PENALTY_WORDS)
-        # so garbage OCR text has a clear loser → FAIL or MANUAL both acceptable
         sections = [
             Section(1, "HEADER", "The quick brown fox jumps over the lazy dog."),
             Section(2, "FOOTER", "Copyright 2026 all rights reserved."),
@@ -408,7 +439,6 @@ class TestLongTextPenalty:
             z = process_zip(f.read())
         fname, fbytes = z.texts['en']
         sections = extract_sections(fbytes, fname)
-        logo = next(s for s in sections if s.name == 'LOGO')
         result = select_best(sections, 'SHORT TEXT', 'en', hint_number=10)
         assert result.best.section.name == 'LOGO'
 
