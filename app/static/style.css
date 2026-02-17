@@ -183,6 +183,7 @@ body {
 .results-table tr:hover td { background: #fafbff; }
 
 /* Image thumbnail */
+.thumb-wrap { position: relative; display: inline-block; }
 .thumb {
   width: 100px;
   height: 70px;
@@ -191,6 +192,18 @@ body {
   display: block;
   border: 1px solid #eee;
   cursor: zoom-in;
+}
+.thumb-missing {
+  width: 100px;
+  height: 70px;
+  border-radius: 6px;
+  border: 1px dashed #ddd;
+  background: #fafafa;
+  color: #bbb;
+  font-size: 11px;
+  text-align: center;
+  align-items: center;
+  justify-content: center;
 }
 .thumb-label {
   font-size: .72rem;
@@ -208,9 +221,11 @@ body {
   max-width: 300px;
   min-width: 160px;
 }
-.diff-line { display: block; }
-.diff-add  { background: #dcfce7; color: #166534; }
-.diff-del  { background: #fee2e2; color: #991b1b; }
+.text-line  { display: block; min-height: 1.4em; line-height: 1.5; }
+.diff-line  { display: block; min-height: 1.4em; }
+.diff-add   { background: #dcfce7; color: #166534; }
+.diff-del   { background: #fee2e2; color: #991b1b; }
+.diff-pad   { background: transparent; color: transparent; } /* alignment padding */
 .diff-char-add { background: #bbf7d0; }
 .diff-char-del { background: #fecaca; text-decoration: line-through; }
 
