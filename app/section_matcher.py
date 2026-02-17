@@ -110,9 +110,11 @@ def _text_from_docx_bytes(docx_bytes: bytes) -> List["Section"]:
                     if sec:
                         sections.append(sec)
     else:
-        # Paragraph fallback
-        lines = [p.text for p in doc.paragraphs]
-        sections = _parse_sections_from_lines(lines)
+        # Paragraph fallback — try Heading 2 style first, then line-based
+        sections = _parse_sections_from_paragraphs(doc.paragraphs)
+        if not sections or (len(sections) == 1 and sections[0].name == "UNKNOWN"):
+            lines = [p.text for p in doc.paragraphs]
+            sections = _parse_sections_from_lines(lines)
 
     return sections
 
@@ -120,6 +122,72 @@ def _text_from_docx_bytes(docx_bytes: bytes) -> List["Section"]:
 def _text_from_txt_bytes(txt_bytes: bytes) -> List["Section"]:
     text = txt_bytes.decode("utf-8", errors="replace")
     return _parse_sections_from_lines(text.splitlines())
+
+
+# ─── Heading 2 style section segmentation ────────────────────────────────────
+
+def _parse_sections_from_paragraphs(paragraphs) -> List["Section"]:
+    """
+    Parse DOCX paragraphs using Heading 2 style as section delimiters.
+    Falls back gracefully if no Heading 2 found.
+    """
+    sections: List["Section"] = []
+    current_lines: List[str] = []
+    current_name = "UNKNOWN"
+    current_num: Optional[int] = None
+    current_header = ""
+    found_heading = False
+
+    def flush():
+        content = "\n".join(current_lines).strip()
+        if content or current_header:
+            sections.append(Section(
+                number=current_num,
+                name=current_name,
+                content_text=content,
+                raw_header=current_header,
+            ))
+
+    for para in paragraphs:
+        style_name = para.style.name if para.style else ""
+        text = para.text.strip()
+        if not text:
+            continue
+
+        is_heading = "Heading 2" in style_name or "heading 2" in style_name.lower()
+
+        # Also detect "N. NAME" pattern as heading regardless of style
+        m = re.match(r"^(\d+)\.\s+(.+)$", text) if not is_heading else None
+
+        if is_heading or m:
+            found_heading = True
+            if current_lines or current_header:
+                flush()
+                current_lines = []
+            if m:
+                current_num = int(m.group(1))
+                current_name = m.group(2).strip()
+                current_header = text
+            else:
+                # Heading 2 style, parse number if present
+                m2 = re.match(r"^(\d+)\.\s+(.+)$", text)
+                if m2:
+                    current_num = int(m2.group(1))
+                    current_name = m2.group(2).strip()
+                else:
+                    current_num = None
+                    current_name = text
+                current_header = text
+        else:
+            current_lines.append(text)
+
+    if current_lines or current_header:
+        flush()
+
+    if not found_heading:
+        return []  # Signal to caller to fall back to line-based
+
+    return sections
 
 
 # ─── Line-based section segmentation (fallback) ─────────────────────────────
@@ -196,8 +264,6 @@ def _score_section(
     section: Section,
     ocr_text: str,
     lang: str,
-    hint_number: Optional[int],
-    hint_name: Optional[str],
 ) -> ScoredCandidate:
     warnings: List[str] = []
     score = 0.0
@@ -211,12 +277,6 @@ def _score_section(
         score += 1.0
     elif name_lower in _PENALTY_WORDS:
         score -= 0.5
-
-    # Hint bonus
-    if hint_number is not None and section.number == hint_number:
-        score += 0.3
-    if hint_name and hint_name.lower() in section.name.lower():
-        score += 0.2
 
     # Placeholder penalty
     placeholder_flag = has_placeholder(content)
@@ -288,9 +348,24 @@ def select_best(
             status="MANUAL", delta=0.0, reason="ocr_too_short"
         )
 
+    # ── HINT HARD FILTER (Bug 2 fix) ─────────────────────────────────────────
+    # Apply hint as hard constraint BEFORE scoring, not as a bonus.
+    # Only filter if at least one section passes — otherwise fall through to all.
+    filtered = sections
+    if hint_number is not None:
+        by_num = [s for s in sections if s.number == hint_number]
+        if by_num:
+            filtered = by_num
+    if hint_name:
+        by_name = [s for s in filtered if hint_name.lower() in s.name.lower()]
+        if by_name:
+            filtered = by_name
+    # If filtering left us with sections, use them; otherwise fall back to all
+    working_sections = filtered if filtered != sections or (hint_number is None and not hint_name) else filtered
+
     candidates = [
-        _score_section(s, ocr_text, lang, hint_number, hint_name)
-        for s in sections
+        _score_section(s, ocr_text, lang)
+        for s in working_sections
     ]
     candidates.sort(key=lambda c: c.score, reverse=True)
 
