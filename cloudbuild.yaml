@@ -1,0 +1,42 @@
+steps:
+  # Build Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'europe-west1-docker.pkg.dev/project-d245d8c8-8548-47d2-a04/ai-ocr/ai-ocr:$COMMIT_SHA'
+      - '-t'
+      - 'europe-west1-docker.pkg.dev/project-d245d8c8-8548-47d2-a04/ai-ocr/ai-ocr:latest'
+      - '.'
+
+  # Push image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '--all-tags'
+      - 'europe-west1-docker.pkg.dev/project-d245d8c8-8548-47d2-a04/ai-ocr/ai-ocr'
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'ai-ocr'
+      - '--image=europe-west1-docker.pkg.dev/project-d245d8c8-8548-47d2-a04/ai-ocr/ai-ocr:$COMMIT_SHA'
+      - '--region=europe-west1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--service-account=ocr-service-account@project-d245d8c8-8548-47d2-a04.iam.gserviceaccount.com'
+      - '--memory=512Mi'
+      - '--cpu=1'
+      - '--timeout=300'
+      - '--concurrency=10'
+      - '--max-instances=5'
+      - '--set-env-vars=DB_PATH=/tmp/sessions.db'
+
+images:
+  - 'europe-west1-docker.pkg.dev/project-d245d8c8-8548-47d2-a04/ai-ocr/ai-ocr'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
