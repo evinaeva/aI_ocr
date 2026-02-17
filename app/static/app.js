@@ -168,17 +168,23 @@ function renderTable(rows) {
   }
   rows.forEach(row => {
     const tr = document.createElement('tr');
+    const imgSrc = row.image_name
+      ? `/image/${state.sessionId}/${encodeURIComponent(row.image_name)}`
+      : null;
+
     tr.innerHTML = `
       <td class="img-cell">
-        ${row.image_name
-          ? `<img class="thumb" src="/image/${state.sessionId}/${encodeURIComponent(row.image_name)}"
-                   alt="${esc(row.image_name)}"
-                   data-full="/image/${state.sessionId}/${encodeURIComponent(row.image_name)}">
+        ${imgSrc
+          ? `<div class="thumb-wrap">
+               <img class="thumb" src="${imgSrc}" alt="${esc(row.image_name)}"
+                    data-full="${imgSrc}">
+               <div class="thumb-missing" style="display:none">no image</div>
+             </div>
              <div class="thumb-label">${esc(row.lang?.toUpperCase() || '')}</div>`
           : '<span style="color:#ccc">—</span>'}
       </td>
-      <td class="text-cell">${alignedDiff(row.ocr_text || '', row.ref_text || '', 'ocr')}</td>
-      <td class="text-cell">${alignedDiff(row.ocr_text || '', row.ref_text || '', 'ref')}</td>
+      <td class="text-cell">${formatText(row.ocr_text || '')}</td>
+      <td class="text-cell">${formatText(row.ref_text || '')}</td>
       <td>
         <span class="badge badge-${(row.status||'manual').toLowerCase()}">${esc(row.status||'MANUAL')}</span>
         ${row.section_name
@@ -192,8 +198,13 @@ function renderTable(rows) {
     $resultsBody.appendChild(tr);
   });
 
-  // Bind thumbnail clicks
-  document.querySelectorAll('.thumb').forEach(img => {
+  // Attach image error handlers after DOM insertion
+  document.querySelectorAll('.thumb-wrap img.thumb').forEach(img => {
+    img.addEventListener('error', () => {
+      img.style.display = 'none';
+      const missing = img.nextElementSibling;
+      if (missing) missing.style.display = 'flex';
+    });
     img.addEventListener('click', () => openLightbox(img.dataset.full));
   });
 
@@ -236,82 +247,12 @@ async function handleDecision(e) {
   if (action === 'error') $btnDownload.style.display = '';
 }
 
-// ── Diff alignment (DP line alignment + char diff) ────────────────────────
-function alignedDiff(ocrText, refText, side) {
-  const ocrLines = ocrText.split('\n');
-  const refLines = refText.split('\n');
-  const aligned = dpAlignLines(ocrLines, refLines);
-
-  return aligned.map(([oLine, rLine]) => {
-    const line = side === 'ocr' ? oLine : rLine;
-    if (line === null) {
-      return `<span class="diff-line diff-del">&nbsp;</span>`;
-    }
-    if (oLine === null || rLine === null) {
-      const cls = side === 'ocr' && oLine !== null ? 'diff-add'
-                : side === 'ref' && rLine !== null ? 'diff-add' : 'diff-del';
-      return `<span class="diff-line ${cls}">${esc(line)}</span>`;
-    }
-    if (oLine === rLine) {
-      return `<span class="diff-line">${esc(line)}</span>`;
-    }
-    // char-level diff for changed lines
-    return `<span class="diff-line">${charDiff(oLine, rLine, side)}</span>`;
-  }).join('');
-}
-
-// Simple greedy DP line alignment (LCS-based)
-function dpAlignLines(a, b) {
-  const m = a.length, n = b.length;
-  const dp = Array.from({length: m+1}, () => new Array(n+1).fill(0));
-  for (let i = 1; i <= m; i++)
-    for (let j = 1; j <= n; j++)
-      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1]+1 : Math.max(dp[i-1][j], dp[i][j-1]);
-
-  // Traceback
-  const result = [];
-  let i = m, j = n;
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && a[i-1] === b[j-1]) {
-      result.push([a[i-1], b[j-1]]); i--; j--;
-    } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
-      result.push([null, b[j-1]]); j--;
-    } else {
-      result.push([a[i-1], null]); i--;
-    }
-  }
-  return result.reverse();
-}
-
-// Char-level diff using Myers-like (simple)
-function charDiff(aStr, bStr, side) {
-  const a = [...aStr], b = [...bStr];
-  const m = a.length, n = b.length;
-  const dp = Array.from({length: m+1}, () => new Array(n+1).fill(0));
-  for (let i = 1; i <= m; i++)
-    for (let j = 1; j <= n; j++)
-      dp[i][j] = a[i-1] === b[j-1] ? dp[i-1][j-1]+1 : Math.max(dp[i-1][j], dp[i][j-1]);
-
-  const ops = [];
-  let i = m, j = n;
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && a[i-1] === b[j-1]) {
-      ops.push(['eq', a[i-1]]); i--; j--;
-    } else if (j > 0 && (i === 0 || dp[i][j-1] >= dp[i-1][j])) {
-      ops.push(['ins', b[j-1]]); j--;
-    } else {
-      ops.push(['del', a[i-1]]); i--;
-    }
-  }
-  ops.reverse();
-
-  return ops.map(([op, ch]) => {
-    const escaped = esc(ch);
-    if (op === 'eq') return escaped;
-    if (op === 'ins' && side === 'ref') return `<span class="diff-char-add">${escaped}</span>`;
-    if (op === 'del' && side === 'ocr') return `<span class="diff-char-del">${escaped}</span>`;
-    return escaped;
-  }).join('');
+// ── Text formatting ────────────────────────────────────────────────────────
+function formatText(text) {
+  if (!text) return '<span style="color:#ccc">—</span>';
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  if (!lines.length) return '<span style="color:#ccc">—</span>';
+  return lines.map(l => `<span class="text-line">${esc(l)}</span>`).join('');
 }
 
 // ── Pagination ────────────────────────────────────────────────────────────
