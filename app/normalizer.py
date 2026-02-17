@@ -4,10 +4,14 @@ Text normalization for OCR vs reference comparison.
 import re
 import unicodedata
 
-# Placeholder patterns: %anything%, [identifier], <tag>
+# Placeholder patterns:
+#   %anything%        — template variables
+#   [identifier]      — subscriber vars like [firstname]
+#   <lowercase_var>   — only lowercase/underscore vars like <date>, <firstname>
+#                       CTA buttons like <BUY TOKENS> are NOT placeholders
 _PLACEHOLDER_PCT     = re.compile(r"%[^%]+%")
 _PLACEHOLDER_BRACKET = re.compile(r"\[[^\]]+\]")
-_PLACEHOLDER_ANGLE   = re.compile(r"<[^>]+>")
+_PLACEHOLDER_ANGLE   = re.compile(r"<[a-z_][a-z0-9_ ]*>")   # only lowercase = variables
 
 
 def _remove_placeholders(text: str) -> str:
@@ -25,15 +29,20 @@ def _pre_clean(text: str) -> str:
     """
     Pre-clean: remove emoji, arrows, BiDi marks; normalize dashes/spaces/quotes.
     """
-    # Emoji & pictographic
+    # Emoji & pictographic ranges
     text = re.sub(
         "[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U00002B00-\U00002BFF\uFE00-\uFE0F]",
         "", text
     )
-    # Arrow / bullet / geometric shapes (e.g. U+25B6 black right-pointing triangle)
+    # All geometric shapes block (U+25B0-U+25FF) — covers ►▸▶▷◆◈◉○●□■▪▫ etc.
+    # Dingbat arrows (U+27A0-U+27BF) — covers ➢➤➨ etc.
+    # Standard arrows (U+2190-U+21FF)
+    # Bullets and middle dot
     text = re.sub(
-        r"[\u25B6\u25BA\u25B7\u27A4\u27A2\u27A1\u2192\u2190\u2191\u2193"
-        r"\u2022\u00B7\u2023\u29BF\u25C6\u25C9\u25CB\u25CF\u25A0\u25A1\u25AA\u25AB]",
+        r"[\u25B0-\u25FF"   # geometric shapes (includes ▶►▸▷◆ etc.)
+        r"\u27A0-\u27BF"    # dingbat arrows
+        r"\u2190-\u21FF"    # arrows block
+        r"\u2022\u00B7]",   # bullet •, middle dot ·
         "", text
     )
     # BiDi / LTR-RTL embedding marks (very common in Arabic/Hebrew DOCX)
@@ -47,10 +56,10 @@ def _pre_clean(text: str) -> str:
     text = text.replace("\u2018", "'").replace("\u2019", "'")
     text = text.replace("\u00ab", '"').replace("\u00bb", '"')
     text = text.replace("\u2039", "'").replace("\u203a", "'")
-    # Soft hyphen, zero-width
+    # Soft hyphen, zero-width chars
     text = text.replace("\u00ad", "")
     text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
-    # Ellipsis
+    # Ellipsis character -> three dots
     text = text.replace("\u2026", "...")
     return text
 
@@ -59,11 +68,11 @@ def normalize_strict(text: str) -> str:
     """
     Normalize for strict comparison. Lowercase, strip punctuation, collapse whitespace.
     Does NOT remove placeholders.
-    
+
     Order matters:
     1. Unicode normalize (NFC)
-    2. Pre-clean (emoji, dashes, quotes, BiDi marks)
-    3. Collapse spaces after pre-clean (pre_clean adds spaces)
+    2. Pre-clean (emoji, symbols, dashes, quotes, BiDi marks)
+    3. Collapse spaces (pre_clean may leave extra whitespace)
     4. Lowercase
     5. Remove punctuation (keep only word chars and spaces)
     6. Final whitespace collapse
@@ -72,10 +81,10 @@ def normalize_strict(text: str) -> str:
         return ""
     text = unicodedata.normalize("NFC", text)
     text = _pre_clean(text)
-    text = _collapse_whitespace(text)  # Clean up spaces added by pre-clean
+    text = _collapse_whitespace(text)
     text = text.lower()
     text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-    text = _collapse_whitespace(text)  # Final collapse
+    text = _collapse_whitespace(text)
     return text
 
 
@@ -85,11 +94,11 @@ def normalize_soft(text: str) -> str:
         return ""
     text = unicodedata.normalize("NFC", text)
     text = _pre_clean(text)
-    text = _collapse_whitespace(text)  # Clean up spaces added by pre-clean
+    text = _collapse_whitespace(text)
     text = text.lower()
     text = _remove_placeholders(text)
     text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-    text = _collapse_whitespace(text)  # Final collapse
+    text = _collapse_whitespace(text)
     return text
 
 
