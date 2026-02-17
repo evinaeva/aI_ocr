@@ -59,14 +59,23 @@ def normalize_strict(text: str) -> str:
     """
     Normalize for strict comparison. Lowercase, strip punctuation, collapse whitespace.
     Does NOT remove placeholders.
+    
+    Order matters:
+    1. Unicode normalize (NFC)
+    2. Pre-clean (emoji, dashes, quotes, BiDi marks)
+    3. Collapse spaces after pre-clean (pre_clean adds spaces)
+    4. Lowercase
+    5. Remove punctuation (keep only word chars and spaces)
+    6. Final whitespace collapse
     """
     if not text:
         return ""
     text = unicodedata.normalize("NFC", text)
     text = _pre_clean(text)
+    text = _collapse_whitespace(text)  # Clean up spaces added by pre-clean
     text = text.lower()
     text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-    text = _collapse_whitespace(text)
+    text = _collapse_whitespace(text)  # Final collapse
     return text
 
 
@@ -76,10 +85,11 @@ def normalize_soft(text: str) -> str:
         return ""
     text = unicodedata.normalize("NFC", text)
     text = _pre_clean(text)
+    text = _collapse_whitespace(text)  # Clean up spaces added by pre-clean
     text = text.lower()
     text = _remove_placeholders(text)
     text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-    text = _collapse_whitespace(text)
+    text = _collapse_whitespace(text)  # Final collapse
     return text
 
 
