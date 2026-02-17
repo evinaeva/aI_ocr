@@ -208,10 +208,38 @@ async def _process_session(
     )
     conn.commit()
 
+    # locked_section_number: once we identify which section to check,
+    # lock it so ALL languages use the same section number.
+    # Same archive = same section type for all languages.
+    locked_section_number: Optional[int] = hint_number
+
     try:
         contents = process_zip(zip_bytes)
         langs = sorted(contents.images.keys())
         total = len(langs)
+
+        # ── Resolve hint_name → section number upfront ────────────────────────
+        # hint_name (e.g. "banner") only matches English names.
+        # For translated langs (hi=बैनर, hy=ՊԱՍՏԱՌ), we must use number.
+        # So: look up the number in the EN DOCX first.
+        if hint_name and locked_section_number is None:
+            ref_lang = "en" if "en" in contents.texts else (
+                sorted(contents.texts.keys())[0] if contents.texts else None
+            )
+            if ref_lang:
+                ref_fname, ref_bytes = contents.texts[ref_lang]
+                ref_sections = await asyncio.get_event_loop().run_in_executor(
+                    None, extract_sections, ref_bytes, ref_fname
+                )
+                hint_lower = hint_name.strip().lower()
+                for sec in ref_sections:
+                    if hint_lower in sec.name.lower():
+                        locked_section_number = sec.number
+                        logger.info(
+                            "Resolved hint_name=%r -> section #%d (%s) from lang=%s",
+                            hint_name, locked_section_number, sec.name, ref_lang
+                        )
+                        break
 
         conn.execute(
             "UPDATE sessions SET total=? WHERE session_id=?", (total, session_id)
@@ -270,22 +298,30 @@ async def _process_session(
                 )
 
                 selection = await asyncio.get_event_loop().run_in_executor(
-                    None, select_best, sections, ocr_text, lang, hint_number, hint_name
+                    None, select_best, sections, ocr_text, lang, locked_section_number, hint_name
                 )
 
                 status = selection.status
                 reason = selection.reason
                 if selection.best:
-                    ref_text = selection.best.section.content_text
+                    # Store cleaned reference text for display (no emoji, no placeholders)
+                    from .normalizer import clean_for_display
+                    ref_text = clean_for_display(selection.best.section.content_text)
                     section_name_found = selection.best.section.name
                     section_num_found = selection.best.section.number
                     score_val = selection.best.score
 
+                    # If no hint was given, lock after first successful identification
+                    if locked_section_number is None and section_num_found is not None:
+                        locked_section_number = section_num_found
+                        logger.info("Locked section #%d (%s) from lang=%s",
+                                    locked_section_number, section_name_found, lang)
+
                 logger.info(
-                    "lang=%s status=%s reason=%s section=%s hint_num=%s hint_name=%s "
+                    "lang=%s status=%s reason=%s section=%s locked_num=%s "
                     "ocr_norm='%.60s' ref_norm='%.60s'",
                     lang, status, reason, section_name_found,
-                    hint_number, hint_name,
+                    locked_section_number,
                     normalize_strict(ocr_text),
                     normalize_strict(ref_text),
                 )
