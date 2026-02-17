@@ -20,21 +20,20 @@ from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .normalizer import normalize_strict, normalize_soft
+from .normalizer import normalize_strict, normalize_soft, clean_for_display
 from .ocr import run_ocr
 from .section_matcher import extract_sections, select_best
 from .zip_processor import process_zip
 
-# ─── Logging ────────────────────────────────────────────────────────────────
+# ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── Paths ──────────────────────────────────────────────────────────────────
+# ─── Paths ───────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 
-# SQLite DB path (persistent on Cloud Run via mounted volume, or /tmp fallback)
 DB_PATH = os.getenv("DB_PATH", "/tmp/sessions.db")
 
 # ─── DB helpers ──────────────────────────────────────────────────────────────
@@ -51,7 +50,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS sessions (
             session_id TEXT PRIMARY KEY,
             created_at REAL,
-            status TEXT,          -- pending | processing | done | error
+            status TEXT,
             total INTEGER DEFAULT 0,
             pass_count INTEGER DEFAULT 0,
             fail_count INTEGER DEFAULT 0,
@@ -67,10 +66,10 @@ def init_db():
             ref_text TEXT,
             section_name TEXT,
             section_number INTEGER,
-            status TEXT,          -- PASS | FAIL | MANUAL
+            status TEXT,
             score REAL,
             reason TEXT,
-            manual_decision TEXT  -- null | ok | error
+            manual_decision TEXT
         );
         CREATE TABLE IF NOT EXISTS images (
             session_id TEXT,
@@ -97,7 +96,6 @@ app = FastAPI(lifespan=lifespan, title="OCR Localization Checker")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
-# In-memory SSE queues: session_id → asyncio.Queue
 _sse_queues: Dict[str, asyncio.Queue] = {}
 
 
@@ -122,14 +120,21 @@ async def index(request: Request):
 @app.get("/image/{session_id}/{filename:path}")
 async def get_image(session_id: str, filename: str):
     conn = get_db()
+    # Try exact filename first, then basename only
     row = conn.execute(
         "SELECT data FROM images WHERE session_id=? AND filename=?",
         (session_id, filename),
     ).fetchone()
+    if not row:
+        # fallback: match by basename
+        basename = filename.split("/")[-1]
+        row = conn.execute(
+            "SELECT data FROM images WHERE session_id=? AND filename=?",
+            (session_id, basename),
+        ).fetchone()
     conn.close()
     if not row:
         return Response(status_code=404)
-    # Detect mime type
     fname_lower = filename.lower()
     if fname_lower.endswith(".png"):
         media_type = "image/png"
@@ -179,7 +184,6 @@ async def upload(
     session_id = str(uuid.uuid4())
     zip_bytes = await zip_file.read()
 
-    # Create session row
     conn = get_db()
     conn.execute(
         "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
@@ -188,7 +192,6 @@ async def upload(
     conn.commit()
     conn.close()
 
-    # Kick off background processing
     asyncio.create_task(
         _process_session(session_id, zip_bytes, section_number, section_name)
     )
@@ -208,9 +211,6 @@ async def _process_session(
     )
     conn.commit()
 
-    # locked_section_number: once we identify which section to check,
-    # lock it so ALL languages use the same section number.
-    # Same archive = same section type for all languages.
     locked_section_number: Optional[int] = hint_number
 
     try:
@@ -218,10 +218,6 @@ async def _process_session(
         langs = sorted(contents.images.keys())
         total = len(langs)
 
-        # ── Resolve hint_name → section number upfront ────────────────────────
-        # hint_name (e.g. "banner") only matches English names.
-        # For translated langs (hi=बैनर, hy=ՊԱՍՏԱՌ), we must use number.
-        # So: look up the number in the EN DOCX first.
         if hint_name and locked_section_number is None:
             ref_lang = "en" if "en" in contents.texts else (
                 sorted(contents.texts.keys())[0] if contents.texts else None
@@ -253,17 +249,14 @@ async def _process_session(
         for idx, lang in enumerate(langs):
             image_bytes = contents.images[lang]
             image_name  = contents.image_names[lang]
-            # Use only basename for DB key (avoid path separators)
             image_key = image_name.split("/")[-1]
 
-            # Store image in DB
             conn.execute(
                 "INSERT OR REPLACE INTO images VALUES (?,?,?)",
                 (session_id, image_key, image_bytes),
             )
             conn.commit()
 
-            # OCR
             _push_event(session_id, {
                 "event": "progress", "idx": idx, "lang": lang,
                 "step": "ocr", "message": f"OCR {lang}..."
@@ -271,11 +264,12 @@ async def _process_session(
             ocr_result = await asyncio.get_event_loop().run_in_executor(
                 None, run_ocr, image_bytes
             )
-            ocr_text = ocr_result.text
+            ocr_text_raw = ocr_result.text
+            # Clean OCR for display: remove arrows, bullets, emoji, brackets
+            ocr_text_display = clean_for_display(ocr_text_raw)
             logger.info("lang=%s image=%s ocr_len=%d conf=%.3f engine=%s",
-                        lang, image_key, len(ocr_text), ocr_result.confidence, ocr_result.engine)
+                        lang, image_key, len(ocr_text_raw), ocr_result.confidence, ocr_result.engine)
 
-            # Find matching text file
             text_name = ""
             ref_text = ""
             section_name_found = ""
@@ -297,21 +291,20 @@ async def _process_session(
                     None, extract_sections, file_bytes, fname
                 )
 
+                # Matching uses raw OCR text (normalize_strict handles cleanup)
                 selection = await asyncio.get_event_loop().run_in_executor(
-                    None, select_best, sections, ocr_text, lang, locked_section_number, hint_name
+                    None, select_best, sections, ocr_text_raw, lang, locked_section_number, hint_name
                 )
 
                 status = selection.status
                 reason = selection.reason
                 if selection.best:
-                    # Store cleaned reference text for display (no emoji, no placeholders)
-                    from .normalizer import clean_for_display
+                    # Reference for display: no emoji, no placeholders, no CTA brackets
                     ref_text = clean_for_display(selection.best.section.content_text)
                     section_name_found = selection.best.section.name
                     section_num_found = selection.best.section.number
                     score_val = selection.best.score
 
-                    # If no hint was given, lock after first successful identification
                     if locked_section_number is None and section_num_found is not None:
                         locked_section_number = section_num_found
                         logger.info("Locked section #%d (%s) from lang=%s",
@@ -322,14 +315,13 @@ async def _process_session(
                     "ocr_norm='%.60s' ref_norm='%.60s'",
                     lang, status, reason, section_name_found,
                     locked_section_number,
-                    normalize_strict(ocr_text),
+                    normalize_strict(ocr_text_raw),
                     normalize_strict(ref_text),
                 )
             else:
                 status = "MANUAL"
                 reason = "no_text_file"
 
-            # Tally
             if status == "PASS":
                 pass_count += 1
             elif status == "FAIL":
@@ -342,7 +334,8 @@ async def _process_session(
                    (session_id, lang, image_name, text_name, ocr_text, ref_text,
                     section_name, section_number, status, score, reason)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (session_id, lang, image_key, text_name, ocr_text, ref_text,
+                # Store cleaned OCR text for display
+                (session_id, lang, image_key, text_name, ocr_text_display, ref_text,
                  section_name_found, section_num_found, status, score_val, reason),
             )
             conn.commit()
@@ -447,7 +440,6 @@ async def get_results(
 
 @app.post("/decide/{result_id}")
 async def decide(result_id: int, decision: str = Form(...)):
-    """Record manual review decision: 'ok' or 'error'."""
     if decision not in ("ok", "error"):
         return JSONResponse({"error": "invalid decision"}, status_code=400)
     conn = get_db()
@@ -463,7 +455,6 @@ async def decide(result_id: int, decision: str = Form(...)):
 
 @app.post("/debug/ocr")
 async def debug_ocr(zip_file: UploadFile = File(...)):
-    """Debug: run OCR on first 2 images, return raw text + normalized comparison."""
     zip_bytes = await zip_file.read()
     contents = process_zip(zip_bytes)
     langs = sorted(contents.images.keys())
@@ -509,6 +500,7 @@ async def debug_ocr(zip_file: UploadFile = File(...)):
             "lang": lang,
             "image_name": image_name,
             "ocr_text_raw": ocr_text,
+            "ocr_text_display": clean_for_display(ocr_text),
             "ocr_confidence": ocr_result.confidence,
             "ocr_engine": ocr_result.engine,
             "sections": sections_data,
@@ -522,7 +514,6 @@ async def debug_ocr(zip_file: UploadFile = File(...)):
 
 @app.get("/download/{session_id}")
 async def download_errors(session_id: str):
-    """Return ZIP of images where manual_decision='error'."""
     conn = get_db()
     rows = conn.execute(
         """SELECT r.image_name, i.data
