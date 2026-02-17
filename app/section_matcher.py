@@ -4,19 +4,31 @@ Section matcher: parse DOCX/TXT, score candidates, pick best match.
 import io
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from .normalizer import normalize_strict, normalize_soft, has_placeholder
 
 # ─── Keyword scoring ────────────────────────────────────────────────────────
-_HIGH_PRIORITY  = {"banner", "pic", "im", "popup"}
-_PENALTY_WORDS  = {"news", "email", "letter", "subject"}
+_HIGH_PRIORITY = {"banner", "pic", "im", "popup"}
+_PENALTY_WORDS = {"news", "email", "letter", "subject"}
 
-# Regex to detect section header like "5. PIC" at start of text
-_SECTION_HEADER = re.compile(r"^\s*(\d+)\.\s+(\S+(?:\s+\S+){0,4}?)\s*$", re.IGNORECASE | re.MULTILINE)
-
-# Languages that use characters instead of spaces
+# Languages that use characters instead of spaces (no word tokenisation)
 _CJK_LANGS = {"ja", "zh", "zh-hans", "zh-hant", "zh-cn", "zh-tw"}
+
+# Section header regex: "5. NAME"
+# Handles various unicode separators seen in localized DOCX files:
+#   .       U+002E  standard full stop
+#   ․       U+2024  ONE DOT LEADER (used in Armenian/hy rows 1-3)
+#   ։       U+0589  ARMENIAN FULL STOP
+#   ۔       U+06D4  ARABIC FULL STOP (Urdu)
+#   no sep         e.g. "5 ՆԿԱՐ" (number followed directly by space+name)
+_HEADER_RE = re.compile(
+    r"^(\d+)"                   # leading digit(s)
+    r"[.\u2024\u0589\u06D4]?"  # optional separator (., ONE DOT LEADER, Armenian/Arabic full stop)
+    r"\s*"                      # zero or more spaces (Hindi: "4.name" without space)
+    r"([^\d].*)$",              # section name: must not start with digit (avoid matching "10" as "1" + "0...")
+    re.IGNORECASE
+)
 
 
 @dataclass
@@ -49,60 +61,52 @@ class SelectionResult:
 
 # ─── DOCX parsing ───────────────────────────────────────────────────────────
 
+def _parse_header(line: str) -> Optional[tuple]:
+    """
+    Try to parse a section header from a line.
+    Returns (number, name) or None.
+    Handles:
+      - "5. NAME"        standard
+      - "5\u2024 NAME"   ONE DOT LEADER (Armenian DOCX)
+      - "5 NAME"         no separator (some locales)
+      - "4.NAME"         no space after dot (Hindi)
+    """
+    stripped = line.strip()
+    m = _HEADER_RE.match(stripped)
+    if m:
+        return int(m.group(1)), m.group(2).strip()
+    return None
+
+
 def _cell_to_section(cell_text: str) -> Optional[Section]:
-    """
-    Parse a single DOCX cell like:
-        "5. PIC\n\nActual content here"
-    Returns Section or None.
-    """
+    """Parse a single DOCX table cell into a Section."""
     cell_text = cell_text.strip()
     if not cell_text:
         return None
 
     lines = cell_text.splitlines()
-    # Find header line: first non-empty line matching "N. NAME"
-    header_line = ""
-    content_start = 0
     for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped:
+        if not line.strip():
             continue
-        m = re.match(r"^(\d+)\.\s+(.+)$", stripped)
-        if m:
-            header_line = stripped
-            num = int(m.group(1))
-            # Name is everything after "N. " up to end of first line
-            name_raw = m.group(2).strip()
-            content_start = i + 1
-            # Content = remaining lines
-            content_lines = [l for l in lines[content_start:]]
-            content = "\n".join(content_lines).strip()
-            return Section(
-                number=num,
-                name=name_raw,
-                content_text=content,
-                raw_header=header_line,
-            )
+        parsed = _parse_header(line)
+        if parsed:
+            num, name = parsed
+            content = "\n".join(lines[i + 1:]).strip()
+            return Section(number=num, name=name,
+                           content_text=content, raw_header=line.strip())
         else:
-            # No header found on first non-empty line; treat whole cell as content
-            return Section(
-                number=None,
-                name="UNKNOWN",
-                content_text=cell_text,
-                raw_header="",
-            )
+            # First non-empty line is not a header → whole cell is content
+            return Section(number=None, name="UNKNOWN",
+                           content_text=cell_text, raw_header="")
     return None
 
 
-def _text_from_docx_bytes(docx_bytes: bytes) -> List["Section"]:
-    """Parse DOCX and return a list of Section objects directly."""
+def _text_from_docx_bytes(docx_bytes: bytes) -> List[Section]:
     from docx import Document  # type: ignore
-
     doc = Document(io.BytesIO(docx_bytes))
     sections = []
 
     if doc.tables:
-        # Table-based: each row's first cell is a section
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
@@ -110,7 +114,6 @@ def _text_from_docx_bytes(docx_bytes: bytes) -> List["Section"]:
                     if sec:
                         sections.append(sec)
     else:
-        # Paragraph fallback — try Heading 2 style first, then line-based
         sections = _parse_sections_from_paragraphs(doc.paragraphs)
         if not sections or (len(sections) == 1 and sections[0].name == "UNKNOWN"):
             lines = [p.text for p in doc.paragraphs]
@@ -119,19 +122,15 @@ def _text_from_docx_bytes(docx_bytes: bytes) -> List["Section"]:
     return sections
 
 
-def _text_from_txt_bytes(txt_bytes: bytes) -> List["Section"]:
+def _text_from_txt_bytes(txt_bytes: bytes) -> List[Section]:
     text = txt_bytes.decode("utf-8", errors="replace")
     return _parse_sections_from_lines(text.splitlines())
 
 
-# ─── Heading 2 style section segmentation ────────────────────────────────────
+# ─── Heading 2 style segmentation ────────────────────────────────────────────
 
-def _parse_sections_from_paragraphs(paragraphs) -> List["Section"]:
-    """
-    Parse DOCX paragraphs using Heading 2 style as section delimiters.
-    Falls back gracefully if no Heading 2 found.
-    """
-    sections: List["Section"] = []
+def _parse_sections_from_paragraphs(paragraphs) -> List[Section]:
+    sections: List[Section] = []
     current_lines: List[str] = []
     current_name = "UNKNOWN"
     current_num: Optional[int] = None
@@ -142,10 +141,8 @@ def _parse_sections_from_paragraphs(paragraphs) -> List["Section"]:
         content = "\n".join(current_lines).strip()
         if content or current_header:
             sections.append(Section(
-                number=current_num,
-                name=current_name,
-                content_text=content,
-                raw_header=current_header,
+                number=current_num, name=current_name,
+                content_text=content, raw_header=current_header,
             ))
 
     for para in paragraphs:
@@ -155,25 +152,20 @@ def _parse_sections_from_paragraphs(paragraphs) -> List["Section"]:
             continue
 
         is_heading = "Heading 2" in style_name or "heading 2" in style_name.lower()
+        parsed = _parse_header(text) if not is_heading else None
 
-        # Also detect "N. NAME" pattern as heading regardless of style
-        m = re.match(r"^(\d+)\.\s+(.+)$", text) if not is_heading else None
-
-        if is_heading or m:
+        if is_heading or parsed:
             found_heading = True
             if current_lines or current_header:
                 flush()
                 current_lines = []
-            if m:
-                current_num = int(m.group(1))
-                current_name = m.group(2).strip()
+            if parsed:
+                current_num, current_name = parsed
                 current_header = text
             else:
-                # Heading 2 style, parse number if present
-                m2 = re.match(r"^(\d+)\.\s+(.+)$", text)
-                if m2:
-                    current_num = int(m2.group(1))
-                    current_name = m2.group(2).strip()
+                p2 = _parse_header(text)
+                if p2:
+                    current_num, current_name = p2
                 else:
                     current_num = None
                     current_name = text
@@ -184,13 +176,10 @@ def _parse_sections_from_paragraphs(paragraphs) -> List["Section"]:
     if current_lines or current_header:
         flush()
 
-    if not found_heading:
-        return []  # Signal to caller to fall back to line-based
-
-    return sections
+    return sections if found_heading else []
 
 
-# ─── Line-based section segmentation (fallback) ─────────────────────────────
+# ─── Line-based segmentation (fallback) ─────────────────────────────────────
 
 def _parse_sections_from_lines(lines: List[str]) -> List[Section]:
     sections: List[Section] = []
@@ -204,10 +193,8 @@ def _parse_sections_from_lines(lines: List[str]) -> List[Section]:
         content = "\n".join(current_lines).strip()
         if content or current_header:
             sections.append(Section(
-                number=current_num,
-                name=current_name,
-                content_text=content,
-                raw_header=current_header,
+                number=current_num, name=current_name,
+                content_text=content, raw_header=current_header,
             ))
 
     for raw_line in lines:
@@ -225,13 +212,12 @@ def _parse_sections_from_lines(lines: List[str]) -> List[Section]:
             continue
 
         blank_run = 0
-        m = re.match(r"^(\d+)\.\s+(.+)$", stripped)
-        if m:
+        parsed = _parse_header(stripped)
+        if parsed:
             if current_lines or current_header:
                 flush()
                 current_lines = []
-            current_num = int(m.group(1))
-            current_name = m.group(2).strip()
+            current_num, current_name = parsed
             current_header = stripped
         else:
             current_lines.append(stripped)
@@ -260,31 +246,26 @@ def _count_tokens(text: str, lang: str) -> int:
     return len(text.split())
 
 
-def _score_section(
-    section: Section,
-    ocr_text: str,
-    lang: str,
-) -> ScoredCandidate:
+def _name_score(name: str) -> float:
+    """Return priority score for section name (first word)."""
+    first = name.split()[0].lower() if name else ""
+    if first in _HIGH_PRIORITY:
+        return 1.0
+    if first in _PENALTY_WORDS:
+        return -0.5
+    return 0.0
+
+
+def _score_section(section: Section, ocr_text: str, lang: str) -> ScoredCandidate:
     warnings: List[str] = []
-    score = 0.0
+    score = _name_score(section.name)
 
-    # Use only the name keyword (first word before spaces)
-    name_lower = section.name.split()[0].lower() if section.name else ""
     content = section.content_text
-
-    # Base keyword score
-    if name_lower in _HIGH_PRIORITY:
-        score += 1.0
-    elif name_lower in _PENALTY_WORDS:
-        score -= 0.5
-
-    # Placeholder penalty
     placeholder_flag = has_placeholder(content)
     if placeholder_flag:
         score *= 0.5
         warnings.append("has_placeholder")
 
-    # Length penalty (non-CJK only)
     ocr_soft  = normalize_soft(ocr_text)
     cand_soft = normalize_soft(content)
     cand_tokens = _count_tokens(cand_soft, lang)
@@ -293,36 +274,27 @@ def _score_section(
         score -= 0.3
         warnings.append("long_text")
 
-    # Strict equality
     ocr_strict  = normalize_strict(ocr_text)
     cand_strict = normalize_strict(content)
     strict_equal = bool(ocr_strict and cand_strict and ocr_strict == cand_strict)
+    soft_equal   = bool(ocr_soft and cand_soft and ocr_soft == cand_soft)
 
-    # Soft equality
-    soft_equal = bool(ocr_soft and cand_soft and ocr_soft == cand_soft)
-
-    # Big boost for actual match
     if strict_equal:
         score += 5.0
     elif soft_equal:
         score += 3.0
     else:
-        # Partial similarity (token overlap / Jaccard)
         ocr_tokens_set  = set(ocr_soft.split())
         cand_tokens_set = set(cand_soft.split())
         if ocr_tokens_set and cand_tokens_set:
             overlap = len(ocr_tokens_set & cand_tokens_set)
             union   = len(ocr_tokens_set | cand_tokens_set)
-            jaccard = overlap / union if union else 0
-            score += jaccard * 2.0
+            score  += (overlap / union) * 2.0 if union else 0
 
     return ScoredCandidate(
-        section=section,
-        score=score,
-        strict_equal=strict_equal,
-        soft_equal=soft_equal,
-        has_placeholder_flag=placeholder_flag,
-        warnings=warnings,
+        section=section, score=score,
+        strict_equal=strict_equal, soft_equal=soft_equal,
+        has_placeholder_flag=placeholder_flag, warnings=warnings,
     )
 
 
@@ -336,76 +308,47 @@ def select_best(
     hint_name: Optional[str] = None,
 ) -> SelectionResult:
     if not sections:
-        return SelectionResult(
-            best=None, all_candidates=[], manual_required=True,
-            status="MANUAL", delta=0.0, reason="no_sections"
-        )
+        return SelectionResult(best=None, all_candidates=[], manual_required=True,
+                               status="MANUAL", delta=0.0, reason="no_sections")
 
-    ocr_stripped = ocr_text.strip()
-    if len(ocr_stripped) < 3:
-        return SelectionResult(
-            best=None, all_candidates=[], manual_required=True,
-            status="MANUAL", delta=0.0, reason="ocr_too_short"
-        )
+    if len(ocr_text.strip()) < 3:
+        return SelectionResult(best=None, all_candidates=[], manual_required=True,
+                               status="MANUAL", delta=0.0, reason="ocr_too_short")
 
-    # ── HINT HARD FILTER (Bug 2 fix) ─────────────────────────────────────────
-    # Apply hint as hard constraint BEFORE scoring, not as a bonus.
-    # Only filter if at least one section passes — otherwise fall through to all.
+    # ── HINT HARD FILTER ────────────────────────────────────────────────────
+    # Hint number takes absolute priority (same section across all languages)
     filtered = sections
     if hint_number is not None:
         by_num = [s for s in sections if s.number == hint_number]
         if by_num:
             filtered = by_num
-    if hint_name:
+    # Only apply name hint if number didn't already narrow it to 1 section
+    if hint_name and len(filtered) > 1:
         by_name = [s for s in filtered if hint_name.lower() in s.name.lower()]
         if by_name:
             filtered = by_name
-    # If filtering left us with sections, use them; otherwise fall back to all
-    working_sections = filtered if filtered != sections or (hint_number is None and not hint_name) else filtered
 
-    candidates = [
-        _score_section(s, ocr_text, lang)
-        for s in working_sections
-    ]
+    candidates = [_score_section(s, ocr_text, lang) for s in filtered]
     candidates.sort(key=lambda c: c.score, reverse=True)
 
-    top1 = candidates[0]
-    top2 = candidates[1] if len(candidates) > 1 else None
+    top1  = candidates[0]
+    top2  = candidates[1] if len(candidates) > 1 else None
     delta = (top1.score - top2.score) if top2 else 999.0
 
-    # All candidates have placeholders → MANUAL
     if all(c.has_placeholder_flag for c in candidates):
-        return SelectionResult(
-            best=top1, all_candidates=candidates, manual_required=True,
-            status="MANUAL", delta=delta, reason="all_placeholders"
-        )
+        return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
+                               status="MANUAL", delta=delta, reason="all_placeholders")
 
-    # Delta too small and no strict equal → MANUAL
     if delta < 0.05 and not top1.strict_equal:
-        return SelectionResult(
-            best=top1, all_candidates=candidates, manual_required=True,
-            status="MANUAL", delta=delta, reason="ambiguous_delta"
-        )
+        return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
+                               status="MANUAL", delta=delta, reason="ambiguous_delta")
 
-    # Determine status
     if top1.strict_equal:
-        status = "PASS"
-        manual = False
-        reason = "strict_equal"
-    elif top1.soft_equal:
-        status = "MANUAL"
-        manual = True
-        reason = "soft_equal_only"
-    else:
-        status = "FAIL"
-        manual = False
-        reason = "no_match"
+        return SelectionResult(best=top1, all_candidates=candidates, manual_required=False,
+                               status="PASS", delta=delta, reason="strict_equal")
+    if top1.soft_equal:
+        return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
+                               status="MANUAL", delta=delta, reason="soft_equal_only")
 
-    return SelectionResult(
-        best=top1,
-        all_candidates=candidates,
-        manual_required=manual,
-        status=status,
-        delta=delta,
-        reason=reason,
-    )
+    return SelectionResult(best=top1, all_candidates=candidates, manual_required=False,
+                           status="FAIL", delta=delta, reason="no_match")
