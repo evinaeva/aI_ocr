@@ -225,11 +225,13 @@ async def _process_session(
         for idx, lang in enumerate(langs):
             image_bytes = contents.images[lang]
             image_name  = contents.image_names[lang]
+            # Use only basename for DB key (avoid path separators)
+            image_key = image_name.split("/")[-1]
 
             # Store image in DB
             conn.execute(
                 "INSERT OR REPLACE INTO images VALUES (?,?,?)",
-                (session_id, image_name, image_bytes),
+                (session_id, image_key, image_bytes),
             )
             conn.commit()
 
@@ -242,6 +244,8 @@ async def _process_session(
                 None, run_ocr, image_bytes
             )
             ocr_text = ocr_result.text
+            logger.info("lang=%s image=%s ocr_len=%d conf=%.3f engine=%s",
+                        lang, image_key, len(ocr_text), ocr_result.confidence, ocr_result.engine)
 
             # Find matching text file
             text_name = ""
@@ -276,6 +280,15 @@ async def _process_session(
                     section_name_found = selection.best.section.name
                     section_num_found = selection.best.section.number
                     score_val = selection.best.score
+
+                logger.info(
+                    "lang=%s status=%s reason=%s section=%s hint_num=%s hint_name=%s "
+                    "ocr_norm='%.60s' ref_norm='%.60s'",
+                    lang, status, reason, section_name_found,
+                    hint_number, hint_name,
+                    normalize_strict(ocr_text),
+                    normalize_strict(ref_text),
+                )
             else:
                 status = "MANUAL"
                 reason = "no_text_file"
@@ -293,14 +306,14 @@ async def _process_session(
                    (session_id, lang, image_name, text_name, ocr_text, ref_text,
                     section_name, section_number, status, score, reason)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                (session_id, lang, image_name, text_name, ocr_text, ref_text,
+                (session_id, lang, image_key, text_name, ocr_text, ref_text,
                  section_name_found, section_num_found, status, score_val, reason),
             )
             conn.commit()
 
             _push_event(session_id, {
                 "event": "item", "idx": idx, "lang": lang,
-                "image_name": image_name, "status": status,
+                "image_name": image_key, "status": status,
             })
 
         conn.execute(
@@ -408,6 +421,65 @@ async def decide(result_id: int, decision: str = Form(...)):
     conn.commit()
     conn.close()
     return JSONResponse({"ok": True})
+
+
+# ─── Routes: Debug OCR ───────────────────────────────────────────────────────
+
+@app.post("/debug/ocr")
+async def debug_ocr(zip_file: UploadFile = File(...)):
+    """Debug: run OCR on first 2 images, return raw text + normalized comparison."""
+    zip_bytes = await zip_file.read()
+    contents = process_zip(zip_bytes)
+    langs = sorted(contents.images.keys())
+    if not langs:
+        return JSONResponse({"error": "no images found"})
+
+    results = []
+    for lang in langs[:2]:
+        image_bytes = contents.images[lang]
+        image_name = contents.image_names[lang]
+
+        ocr_result = await asyncio.get_event_loop().run_in_executor(None, run_ocr, image_bytes)
+        ocr_text = ocr_result.text
+
+        sections_data = []
+        ref_info = {}
+        if lang in contents.texts:
+            fname, file_bytes = contents.texts[lang]
+            sections = await asyncio.get_event_loop().run_in_executor(
+                None, extract_sections, file_bytes, fname
+            )
+            selection = await asyncio.get_event_loop().run_in_executor(
+                None, select_best, sections, ocr_text, lang, None, None
+            )
+            for s in sections:
+                sections_data.append({
+                    "number": s.number,
+                    "name": s.name,
+                    "content_preview": s.content_text[:80],
+                    "norm_strict": normalize_strict(s.content_text),
+                })
+            if selection.best:
+                ref_info = {
+                    "matched_section": selection.best.section.name,
+                    "status": selection.status,
+                    "reason": selection.reason,
+                    "strict_equal": selection.best.strict_equal,
+                    "ocr_norm": normalize_strict(ocr_text),
+                    "ref_norm": normalize_strict(selection.best.section.content_text),
+                }
+
+        results.append({
+            "lang": lang,
+            "image_name": image_name,
+            "ocr_text_raw": ocr_text,
+            "ocr_confidence": ocr_result.confidence,
+            "ocr_engine": ocr_result.engine,
+            "sections": sections_data,
+            "match": ref_info,
+        })
+
+    return JSONResponse(results)
 
 
 # ─── Routes: Download error images ZIP ───────────────────────────────────────
