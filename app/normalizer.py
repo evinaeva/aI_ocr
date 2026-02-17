@@ -6,7 +6,9 @@ import unicodedata
 
 # ── Placeholder whitelist ────────────────────────────────────────────────────
 # Only these known variable names are treated as placeholders and removed
-# during soft normalization. Everything else (CTA buttons, UI labels) is kept.
+# during soft normalization / has_placeholder check.
+# Everything else (CTA buttons like <BUY TOKENS>, UI labels like [here]) is kept
+# for comparison but stripped from display.
 _PLACEHOLDER_NAMES = frozenset({
     "skin",
     "displayname",
@@ -20,6 +22,11 @@ _PLACEHOLDER_NAMES = frozenset({
 _PH_PCT     = re.compile(r"%([^%]+)%")
 _PH_BRACKET = re.compile(r"\[([^\]]+)\]")
 _PH_ANGLE   = re.compile(r"<([^>]+)>")
+
+# For display: strip ALL angle/bracket constructs regardless of whitelist
+_ALL_ANGLE   = re.compile(r"<[^>]*>")
+_ALL_BRACKET = re.compile(r"\[[^\]]*\]")
+_ALL_PCT     = re.compile(r"%[^%]+%")
 
 
 def _is_placeholder_name(name: str) -> bool:
@@ -116,16 +123,26 @@ def normalize_soft(text: str) -> str:
 
 def clean_for_display(text: str) -> str:
     """
-    Clean reference text for display in the UI.
-    Removes emoji, arrows, BiDi marks, and whitelisted placeholders.
+    Clean text for display in the UI (both OCR and Reference columns).
+    - Removes emoji, arrows, bullets, BiDi marks
+    - Removes ALL <angle bracket> constructs (CTA buttons, tags)
+    - Removes ALL [square bracket] constructs
+    - Removes ALL %percent% constructs
+    - Collapses extra blank lines
     Preserves original case and punctuation for readability.
     """
     if not text:
         return ""
     text = unicodedata.normalize("NFC", text)
     text = _pre_clean(text)
-    text = _remove_placeholders(text)
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    # Remove ALL bracket constructs for display (regardless of whitelist)
+    text = _ALL_ANGLE.sub(" ", text)
+    text = _ALL_BRACKET.sub(" ", text)
+    text = _ALL_PCT.sub(" ", text)
+    # Collapse runs of whitespace within lines, but preserve newlines
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    # Remove empty lines and collapse 3+ newlines to 2
+    text = "\n".join(line for line in lines if line.strip())
     return text.strip()
 
 
