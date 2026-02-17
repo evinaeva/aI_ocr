@@ -8,9 +8,9 @@ from typing import List, Optional
 
 from .normalizer import normalize_strict, normalize_soft, has_placeholder
 
-# ─── Keyword scoring ────────────────────────────────────────────────────────
-_HIGH_PRIORITY = {"banner", "pic", "im", "popup"}
-_PENALTY_WORDS = {"news", "email", "letter", "subject"}
+# ─── Keyword scoring ──────────────────────────────────────────────────────────────
+HIGH_PRIORITY_NAMES = {"banner", "pic", "im", "popup"}
+PENALTY_NAMES = {"news", "email", "letter", "subject"}
 
 # Languages that use characters instead of spaces (no word tokenisation)
 _CJK_LANGS = {"ja", "zh", "zh-hans", "zh-hant", "zh-cn", "zh-tw"}
@@ -21,14 +21,19 @@ _CJK_LANGS = {"ja", "zh", "zh-hans", "zh-hant", "zh-cn", "zh-tw"}
 #   ․       U+2024  ONE DOT LEADER (used in Armenian/hy rows 1-3)
 #   ։       U+0589  ARMENIAN FULL STOP
 #   ۔       U+06D4  ARABIC FULL STOP (Urdu)
-#   no sep         e.g. "5 ՆԿԱՐ" (number followed directly by space+name)
+#   ．       U+FF0E  FULLWIDTH FULL STOP (Japanese DOCX)
+#   no sep         e.g. "5 ՆԿԱՌ" (number followed directly by space+name)
 _HEADER_RE = re.compile(
-    r"^(\d+)"                   # leading digit(s)
-    r"[.\u2024\u0589\u06D4]?"  # optional separator (., ONE DOT LEADER, Armenian/Arabic full stop)
-    r"\s*"                      # zero or more spaces (Hindi: "4.name" without space)
-    r"([^\d].*)$",              # section name: must not start with digit (avoid matching "10" as "1" + "0...")
-    re.IGNORECASE
+    r"^(\d+)"                           # leading digit(s)
+    r"[.\u2024\u0589\u06D4\uFF0E]?"    # optional separator
+    r"\s*"                               # zero or more spaces
+    r"([^\d].*)$",                       # section name (must not start with digit)
+    re.IGNORECASE,
 )
+
+# Characters to strip from the beginning of a parsed section name
+# (e.g. fullwidth dot ． left after regex group capture)
+_NAME_LEADING_STRIP_RE = re.compile(r"^[\s.\u2024\u0589\u06D4\uFF0E]+")
 
 
 @dataclass
@@ -59,22 +64,18 @@ class SelectionResult:
     reason: str
 
 
-# ─── DOCX parsing ───────────────────────────────────────────────────────────
+# ─── DOCX parsing ───────────────────────────────────────────────────────────────
 
 def _parse_header(line: str) -> Optional[tuple]:
     """
-    Try to parse a section header from a line.
-    Returns (number, name) or None.
-    Handles:
-      - "5. NAME"        standard
-      - "5\u2024 NAME"   ONE DOT LEADER (Armenian DOCX)
-      - "5 NAME"         no separator (some locales)
-      - "4.NAME"         no space after dot (Hindi)
+    Try to parse a section header. Returns (number, name) or None.
+    Strips leading punctuation artifacts from the name (e.g. ． from Japanese DOCX).
     """
     stripped = line.strip()
     m = _HEADER_RE.match(stripped)
     if m:
-        return int(m.group(1)), m.group(2).strip()
+        name = _NAME_LEADING_STRIP_RE.sub("", m.group(2)).strip()
+        return int(m.group(1)), name
     return None
 
 
@@ -95,7 +96,6 @@ def _cell_to_section(cell_text: str) -> Optional[Section]:
             return Section(number=num, name=name,
                            content_text=content, raw_header=line.strip())
         else:
-            # First non-empty line is not a header → whole cell is content
             return Section(number=None, name="UNKNOWN",
                            content_text=cell_text, raw_header="")
     return None
@@ -127,7 +127,7 @@ def _text_from_txt_bytes(txt_bytes: bytes) -> List[Section]:
     return _parse_sections_from_lines(text.splitlines())
 
 
-# ─── Heading 2 style segmentation ────────────────────────────────────────────
+# ─── Heading 2 style segmentation ────────────────────────────────────────────────
 
 def _parse_sections_from_paragraphs(paragraphs) -> List[Section]:
     sections: List[Section] = []
@@ -179,7 +179,7 @@ def _parse_sections_from_paragraphs(paragraphs) -> List[Section]:
     return sections if found_heading else []
 
 
-# ─── Line-based segmentation (fallback) ─────────────────────────────────────
+# ─── Line-based segmentation (fallback) ─────────────────────────────────────────
 
 def _parse_sections_from_lines(lines: List[str]) -> List[Section]:
     sections: List[Section] = []
@@ -228,7 +228,7 @@ def _parse_sections_from_lines(lines: List[str]) -> List[Section]:
     return sections
 
 
-# ─── Public entry ────────────────────────────────────────────────────────────
+# ─── Public entry ─────────────────────────────────────────────────────────────────
 
 def extract_sections(file_bytes: bytes, filename: str) -> List[Section]:
     fname_lower = filename.lower()
@@ -238,7 +238,7 @@ def extract_sections(file_bytes: bytes, filename: str) -> List[Section]:
         return _text_from_txt_bytes(file_bytes)
 
 
-# ─── Scoring ─────────────────────────────────────────────────────────────────
+# ─── Scoring ─────────────────────────────────────────────────────────────────────
 
 def _count_tokens(text: str, lang: str) -> int:
     if lang in _CJK_LANGS:
@@ -247,11 +247,17 @@ def _count_tokens(text: str, lang: str) -> int:
 
 
 def _name_score(name: str) -> float:
-    """Return priority score for section name (first word)."""
-    first = name.split()[0].lower() if name else ""
-    if first in _HIGH_PRIORITY:
+    """Return priority score based on section name.
+    Uses only the first ASCII-normalized word for matching.
+    """
+    # Strip leading non-word chars, take first word, ASCII-normalize
+    clean = re.sub(r"^[^\w]+", "", name, flags=re.UNICODE)
+    first = clean.split()[0].lower() if clean.split() else ""
+    # Normalize full-width letters to ASCII (e.g. PIC -> pic)
+    first = first.encode('ascii', errors='ignore').decode('ascii')
+    if first in HIGH_PRIORITY_NAMES:
         return 1.0
-    if first in _PENALTY_WORDS:
+    if first in PENALTY_NAMES:
         return -0.5
     return 0.0
 
@@ -298,7 +304,7 @@ def _score_section(section: Section, ocr_text: str, lang: str) -> ScoredCandidat
     )
 
 
-# ─── Selection ───────────────────────────────────────────────────────────────
+# ─── Selection ────────────────────────────────────────────────────────────────────
 
 def select_best(
     sections: List[Section],
@@ -315,14 +321,12 @@ def select_best(
         return SelectionResult(best=None, all_candidates=[], manual_required=True,
                                status="MANUAL", delta=0.0, reason="ocr_too_short")
 
-    # ── HINT HARD FILTER ────────────────────────────────────────────────────
-    # Hint number takes absolute priority (same section across all languages)
+    # ── HINT HARD FILTER ──────────────────────────────────────────────────────────
     filtered = sections
     if hint_number is not None:
         by_num = [s for s in sections if s.number == hint_number]
         if by_num:
             filtered = by_num
-    # Only apply name hint if number didn't already narrow it to 1 section
     if hint_name and len(filtered) > 1:
         by_name = [s for s in filtered if hint_name.lower() in s.name.lower()]
         if by_name:
@@ -335,9 +339,16 @@ def select_best(
     top2  = candidates[1] if len(candidates) > 1 else None
     delta = (top1.score - top2.score) if top2 else 999.0
 
+    # all_placeholders: only trigger if hint narrowed to a single section
+    # OR if all filtered candidates have placeholders
     if all(c.has_placeholder_flag for c in candidates):
-        return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
-                               status="MANUAL", delta=delta, reason="all_placeholders")
+        # If there's a hint (number or name) and we matched exactly one section,
+        # still try to match — don't bail out as all_placeholders
+        if hint_number is not None and len(filtered) == 1:
+            pass  # fall through to normal scoring
+        else:
+            return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
+                                   status="MANUAL", delta=delta, reason="all_placeholders")
 
     if delta < 0.05 and not top1.strict_equal:
         return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
