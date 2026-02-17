@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OCR Localization Checker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="app">
+
+  <!-- HEADER -->
+  <header class="header">
+    <h1>🔍 OCR Localization Checker</h1>
+  </header>
+
+  <!-- UPLOAD FORM -->
+  <section class="upload-section card" id="upload-section">
+    <h2>Upload ZIP</h2>
+    <form id="upload-form">
+      <div class="form-row">
+        <label for="zip-file" class="file-label">
+          <span id="file-label-text">Choose ZIP file…</span>
+          <input type="file" id="zip-file" accept=".zip" required>
+        </label>
+      </div>
+      <div class="form-row hints-row">
+        <div class="hint-field">
+          <label for="section-number">Section number <span class="hint-tag">optional</span></label>
+          <input type="number" id="section-number" placeholder="e.g. 5" min="1">
+        </div>
+        <div class="hint-field">
+          <label for="section-name">Section name <span class="hint-tag">optional</span></label>
+          <input type="text" id="section-name" placeholder="e.g. PIC">
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" id="submit-btn">Check</button>
+    </form>
+  </section>
+
+  <!-- PROGRESS -->
+  <section class="progress-section card" id="progress-section" style="display:none">
+    <h2>Processing…</h2>
+    <div class="progress-bar-wrap">
+      <div class="progress-bar" id="progress-bar"></div>
+    </div>
+    <p class="progress-msg" id="progress-msg">Starting…</p>
+  </section>
+
+  <!-- SUMMARY -->
+  <section class="summary-section card" id="summary-section" style="display:none">
+    <div class="summary-row">
+      <span class="summary-item">Total: <strong id="s-total">0</strong></span>
+      <span class="summary-item pass">PASS: <strong id="s-pass">0</strong></span>
+      <span class="summary-item fail">FAIL: <strong id="s-fail">0</strong></span>
+      <span class="summary-item manual">MANUAL: <strong id="s-manual">0</strong></span>
+    </div>
+    <div class="controls-row">
+      <label class="toggle-label">
+        <input type="checkbox" id="hide-pass"> Hide PASS
+      </label>
+      <button class="btn btn-sm" id="btn-download" style="display:none">
+        ⬇ Download error images
+      </button>
+      <button class="btn btn-sm btn-secondary" id="btn-new">New check</button>
+    </div>
+  </section>
+
+  <!-- RESULTS TABLE -->
+  <section class="results-section" id="results-section" style="display:none">
+    <div class="table-wrap">
+      <table class="results-table" id="results-table">
+        <thead>
+          <tr>
+            <th>Image</th>
+            <th>OCR text</th>
+            <th>Reference text</th>
+            <th>Status</th>
+            <th>Review</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+    <!-- Pagination -->
+    <div class="pagination" id="pagination"></div>
+  </section>
+
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
