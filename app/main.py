@@ -175,12 +175,18 @@ async def progress(session_id: str):
 
 # ─── Routes: Upload & process ────────────────────────────────────────────────
 
+_VALID_ENGINES = {"google", "azure", "ocrspace"}
+
 @app.post("/upload")
 async def upload(
     zip_file: UploadFile = File(...),
+    engine: Optional[str] = Form("google"),
     section_number: Optional[int] = Form(None),
     section_name: Optional[str] = Form(None),
 ):
+    if engine not in _VALID_ENGINES:
+        engine = "google"
+
     session_id = str(uuid.uuid4())
     zip_bytes = await zip_file.read()
 
@@ -193,7 +199,7 @@ async def upload(
     conn.close()
 
     asyncio.create_task(
-        _process_session(session_id, zip_bytes, section_number, section_name)
+        _process_session(session_id, zip_bytes, section_number, section_name, engine)
     )
 
     return JSONResponse({"session_id": session_id})
@@ -204,6 +210,7 @@ async def _process_session(
     zip_bytes: bytes,
     hint_number: Optional[int],
     hint_name: Optional[str],
+    engine: str = "google",
 ):
     conn = get_db()
     conn.execute(
@@ -259,10 +266,10 @@ async def _process_session(
 
             _push_event(session_id, {
                 "event": "progress", "idx": idx, "lang": lang,
-                "step": "ocr", "message": f"OCR {lang}..."
+                "step": "ocr", "message": f"OCR {lang} [{engine}]..."
             })
             ocr_result = await asyncio.get_event_loop().run_in_executor(
-                None, run_ocr, image_bytes
+                None, run_ocr, image_bytes, engine
             )
             ocr_text_raw = ocr_result.text
             ocr_text_display = clean_for_display(ocr_text_raw)
