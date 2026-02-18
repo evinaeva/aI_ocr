@@ -1,6 +1,6 @@
 """
 OCR module: Google Vision + Azure Computer Vision + OCR.Space.
-Returns the result with the highest confidence.
+Supports running a specific engine or all engines (pick best).
 """
 import os
 import logging
@@ -99,7 +99,6 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple[str, float]]:
     """
     OCR.Space Engine 3: 200+ languages, auto-detect.
     No language mapping needed — uses language=auto.
-    API key from env OCR_SPACE_API_KEY (falls back to 'helloworld').
     """
     api_key = os.getenv("OCR_SPACE_API_KEY", "").strip()
     if not api_key:
@@ -116,7 +115,7 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple[str, float]]:
     elif image_bytes[:4] == b'GIF8':
         mime = "image/gif"
     else:
-        mime = "image/jpeg"  # fallback
+        mime = "image/jpeg"
 
     try:
         with httpx.Client(timeout=60) as client:
@@ -142,7 +141,7 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple[str, float]]:
             return None
 
         exit_code = data.get("OCRExitCode", 0)
-        if exit_code not in (1, 2):  # 1=success, 2=partial success
+        if exit_code not in (1, 2):
             logger.warning("OCR.Space exit code: %d", exit_code)
             return None
 
@@ -154,10 +153,7 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple[str, float]]:
         if not text:
             return None
 
-        # OCR.Space doesn't return per-word confidence for engine 3;
-        # use exit code as rough proxy
         confidence = 0.75 if exit_code == 1 else 0.5
-
         return (text, confidence)
 
     except Exception as exc:
@@ -166,6 +162,13 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple[str, float]]:
 
 
 # ─────────────────────────── Public API ──────────────────────────────────────
+
+_ENGINE_FNS = {
+    "google": _ocr_google,
+    "azure": _ocr_azure,
+    "ocrspace": _ocr_ocrspace,
+}
+
 
 class OCRResult:
     def __init__(self, text: str, confidence: float, engine: str):
@@ -177,32 +180,31 @@ class OCRResult:
         return {"text": self.text, "confidence": self.confidence, "engine": self.engine}
 
 
-def run_ocr(image_bytes: bytes) -> OCRResult:
+def run_ocr(image_bytes: bytes, engine: str = None) -> OCRResult:
     """
-    Run Google Vision, Azure, and OCR.Space.
-    Return result with highest confidence.
-    Falls back to whichever one succeeds.
+    Run OCR with a specific engine, or all engines if engine is None.
+    Returns result with highest confidence when running all.
     """
     results: list[tuple[str, float, str]] = []
 
-    g = _ocr_google(image_bytes)
-    if g:
-        results.append((g[0], g[1], "google"))
-
-    a = _ocr_azure(image_bytes)
-    if a:
-        results.append((a[0], a[1], "azure"))
-
-    s = _ocr_ocrspace(image_bytes)
-    if s:
-        results.append((s[0], s[1], "ocrspace"))
+    if engine and engine in _ENGINE_FNS:
+        # Run only the selected engine
+        fn = _ENGINE_FNS[engine]
+        r = fn(image_bytes)
+        if r:
+            results.append((r[0], r[1], engine))
+    else:
+        # Run all engines, pick best
+        for eng_name, fn in _ENGINE_FNS.items():
+            r = fn(image_bytes)
+            if r:
+                results.append((r[0], r[1], eng_name))
 
     if not results:
-        return OCRResult("", 0.0, "none")
+        return OCRResult("", 0.0, engine or "none")
 
-    # Pick highest confidence
     results.sort(key=lambda x: x[1], reverse=True)
-    text, conf, engine = results[0]
-    logger.info("OCR selected engine=%s conf=%.3f len=%d (candidates=%d)",
-                engine, conf, len(text), len(results))
-    return OCRResult(text, conf, engine)
+    text, conf, eng = results[0]
+    logger.info("OCR engine=%s conf=%.3f len=%d (candidates=%d)",
+                eng, conf, len(text), len(results))
+    return OCRResult(text, conf, eng)
