@@ -1,6 +1,6 @@
 """
 OCR module: Google Vision + Azure Computer Vision + OCR.Space.
-Supports running a specific engine or all engines (pick best).
+Supports running a specific engine or a set of engines.
 """
 import os
 import logging
@@ -10,6 +10,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+ALL_ENGINES = ["google", "azure", "ocrspace"]
+
 
 # ─────────────────────────── Google Vision ───────────────────────────────────
 
@@ -17,28 +19,22 @@ def _ocr_google(image_bytes: bytes) -> Optional[tuple[str, float]]:
     """Return (text, confidence) or None on failure."""
     try:
         from google.cloud import vision  # type: ignore
-
         client = vision.ImageAnnotatorClient()
         image = vision.Image(content=image_bytes)
         response = client.document_text_detection(image=image)
-
         if response.error.message:
             logger.warning("Google Vision error: %s", response.error.message)
             return None
-
         full = response.full_text_annotation
         if not full or not full.text:
             return None
-
         confidences = []
         for page in full.pages:
             for block in page.blocks:
                 if block.confidence:
                     confidences.append(block.confidence)
-
         avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
         return (full.text.strip(), avg_conf)
-
     except Exception as exc:
         logger.warning("Google Vision exception: %s", exc)
         return None
@@ -52,42 +48,29 @@ def _ocr_azure(image_bytes: bytes) -> Optional[tuple[str, float]]:
     key = os.getenv("AZURE_OCR_KEY", "")
     if not endpoint or not key:
         return None
-
     url = f"{endpoint}/computervision/imageanalysis:analyze"
-    params = {
-        "features": "read",
-        "api-version": "2023-02-01-preview",
-    }
-    headers = {
-        "Ocp-Apim-Subscription-Key": key,
-        "Content-Type": "application/octet-stream",
-    }
+    params = {"features": "read", "api-version": "2023-02-01-preview"}
+    headers = {"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/octet-stream"}
     try:
         with httpx.Client(timeout=30) as client:
             r = client.post(url, params=params, headers=headers, content=image_bytes)
             r.raise_for_status()
             data = r.json()
-
         read_result = data.get("readResult", {})
         blocks = read_result.get("blocks", [])
-        lines_text = []
-        confidences = []
-
+        lines_text, confidences = [], []
         for block in blocks:
             for line in block.get("lines", []):
                 lines_text.append(line.get("text", ""))
                 for word in line.get("words", []):
-                    conf = word.get("confidence", None)
+                    conf = word.get("confidence")
                     if conf is not None:
                         confidences.append(conf)
-
         if not lines_text:
             return None
-
         text = "\n".join(lines_text).strip()
         avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
         return (text, avg_conf)
-
     except Exception as exc:
         logger.warning("Azure OCR exception: %s", exc)
         return None
@@ -97,17 +80,13 @@ def _ocr_azure(image_bytes: bytes) -> Optional[tuple[str, float]]:
 
 def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple[str, float]]:
     """
-    OCR.Space Engine 3: 200+ languages, auto-detect.
-    No language mapping needed — uses language=auto.
+    OCR.Space Engine 3 — confidence is a fixed approximation
+    (OCR.Space API does not return word-level confidence).
+    exit_code 1 = success → 0.75, exit_code 2 = partial → 0.50.
     """
     api_key = os.getenv("OCR_SPACE_API_KEY", "").strip()
     if not api_key:
-        logger.debug("OCR.Space: no API key, skipping")
         return None
-
-    img_b64 = base64.b64encode(image_bytes).decode()
-
-    # Detect mime type from magic bytes
     if image_bytes[:4] == b'\x89PNG':
         mime = "image/png"
     elif image_bytes[:2] == b'\xff\xd8':
@@ -116,7 +95,7 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple[str, float]]:
         mime = "image/gif"
     else:
         mime = "image/jpeg"
-
+    img_b64 = base64.b64encode(image_bytes).decode()
     try:
         with httpx.Client(timeout=60) as client:
             r = client.post(
@@ -133,39 +112,29 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple[str, float]]:
             )
             r.raise_for_status()
             data = r.json()
-
         if data.get("IsErroredOnProcessing"):
             err_msgs = data.get("ErrorMessage", [])
-            err_str = "; ".join(err_msgs) if isinstance(err_msgs, list) else str(err_msgs)
-            logger.warning("OCR.Space error: %s", err_str)
+            logger.warning("OCR.Space error: %s", err_msgs)
             return None
-
         exit_code = data.get("OCRExitCode", 0)
         if exit_code not in (1, 2):
-            logger.warning("OCR.Space exit code: %d", exit_code)
             return None
-
         parsed = data.get("ParsedResults", [])
         if not parsed:
             return None
-
         text = parsed[0].get("ParsedText", "").strip()
         if not text:
             return None
-
-        confidence = 0.75 if exit_code == 1 else 0.5
+        confidence = 0.75 if exit_code == 1 else 0.50
         return (text, confidence)
-
     except Exception as exc:
         logger.warning("OCR.Space exception: %s", exc)
         return None
 
 
-# ─────────────────────────── Public API ──────────────────────────────────────
-
 _ENGINE_FNS = {
-    "google": _ocr_google,
-    "azure": _ocr_azure,
+    "google":   _ocr_google,
+    "azure":    _ocr_azure,
     "ocrspace": _ocr_ocrspace,
 }
 
@@ -181,30 +150,33 @@ class OCRResult:
 
 
 def run_ocr(image_bytes: bytes, engine: str = None) -> OCRResult:
-    """
-    Run OCR with a specific engine, or all engines if engine is None.
-    Returns result with highest confidence when running all.
-    """
+    """Run a single engine (or best-of-all if engine is None)."""
     results: list[tuple[str, float, str]] = []
-
-    if engine and engine in _ENGINE_FNS:
-        # Run only the selected engine
-        fn = _ENGINE_FNS[engine]
-        r = fn(image_bytes)
+    engines = [engine] if engine and engine in _ENGINE_FNS else list(_ENGINE_FNS.keys())
+    for eng_name in engines:
+        r = _ENGINE_FNS[eng_name](image_bytes)
         if r:
-            results.append((r[0], r[1], engine))
-    else:
-        # Run all engines, pick best
-        for eng_name, fn in _ENGINE_FNS.items():
-            r = fn(image_bytes)
-            if r:
-                results.append((r[0], r[1], eng_name))
-
+            results.append((r[0], r[1], eng_name))
     if not results:
         return OCRResult("", 0.0, engine or "none")
-
     results.sort(key=lambda x: x[1], reverse=True)
     text, conf, eng = results[0]
-    logger.info("OCR engine=%s conf=%.3f len=%d (candidates=%d)",
-                eng, conf, len(text), len(results))
     return OCRResult(text, conf, eng)
+
+
+def run_ocr_multi(image_bytes: bytes, engines: list[str]) -> dict[str, OCRResult]:
+    """
+    Run each engine in `engines`, return dict {engine_name: OCRResult}.
+    Missing / failed engines are not included in the result dict.
+    """
+    out: dict[str, OCRResult] = {}
+    for eng_name in engines:
+        fn = _ENGINE_FNS.get(eng_name)
+        if fn is None:
+            continue
+        r = fn(image_bytes)
+        if r:
+            out[eng_name] = OCRResult(r[0], r[1], eng_name)
+        else:
+            out[eng_name] = OCRResult("", 0.0, eng_name)
+    return out

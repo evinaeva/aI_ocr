@@ -32,29 +32,30 @@
         <input type="file" id="zip-file" accept=".zip" required>
       </div>
 
-      <!-- ENGINE SELECTOR -->
+      <!-- ENGINE SELECTOR (multi-select checkboxes) -->
       <div class="engine-section">
-        <h3>Select OCR Engine</h3>
+        <h3>Select OCR Engine(s)</h3>
         <div class="engine-chips" id="engine-chips">
           <label class="engine-chip" data-engine="google">
-            <input type="radio" name="engine" value="google" checked>
+            <input type="checkbox" name="engine" value="google" checked>
             <span class="engine-dot" style="background:#4285f4"></span>
             <span class="engine-label">Google Vision</span>
             <span class="engine-badge-type">cloud</span>
           </label>
           <label class="engine-chip" data-engine="azure">
-            <input type="radio" name="engine" value="azure">
+            <input type="checkbox" name="engine" value="azure">
             <span class="engine-dot" style="background:#0078d4"></span>
             <span class="engine-label">Azure CV</span>
             <span class="engine-badge-type">cloud</span>
           </label>
           <label class="engine-chip" data-engine="ocrspace">
-            <input type="radio" name="engine" value="ocrspace">
+            <input type="checkbox" name="engine" value="ocrspace">
             <span class="engine-dot" style="background:#ff6b35"></span>
             <span class="engine-label">OCR.Space</span>
             <span class="engine-badge-type">cloud</span>
           </label>
         </div>
+        <p class="engine-hint">Select one or more engines. Multiple engines run in parallel; best result is used for matching.</p>
       </div>
 
       <!-- HINTS -->
@@ -110,14 +111,8 @@
   <section class="results-section" id="results-section" style="display:none">
     <div class="table-wrap">
       <table class="results-table" id="results-table">
-        <thead>
-          <tr>
-            <th>Image</th>
-            <th>OCR text</th>
-            <th>Reference text</th>
-            <th>Status</th>
-            <th>Review</th>
-          </tr>
+        <thead id="results-thead">
+          <!-- populated dynamically based on engines -->
         </thead>
         <tbody id="results-body"></tbody>
       </table>

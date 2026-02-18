@@ -7,36 +7,31 @@ import json
 import logging
 import os
 import sqlite3
-import tempfile
 import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import AsyncGenerator, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .normalizer import normalize_strict, normalize_soft, clean_for_display
-from .ocr import run_ocr
+from .normalizer import normalize_strict, clean_for_display
+from .ocr import run_ocr_multi, ALL_ENGINES
 from .section_matcher import extract_sections, select_best
 from .zip_processor import process_zip
 
-# ─── Logging ─────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── Paths ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
-
 DB_PATH = os.getenv("DB_PATH", "/tmp/sessions.db")
 
-# ─── DB helpers ──────────────────────────────────────────────────────────────
 
 def get_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -54,7 +49,8 @@ def init_db():
             total INTEGER DEFAULT 0,
             pass_count INTEGER DEFAULT 0,
             fail_count INTEGER DEFAULT 0,
-            manual_count INTEGER DEFAULT 0
+            manual_count INTEGER DEFAULT 0,
+            engines TEXT
         );
         CREATE TABLE IF NOT EXISTS results (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -62,7 +58,6 @@ def init_db():
             lang TEXT,
             image_name TEXT,
             text_name TEXT,
-            ocr_text TEXT,
             ref_text TEXT,
             section_name TEXT,
             section_number INTEGER,
@@ -70,8 +65,8 @@ def init_db():
             score REAL,
             reason TEXT,
             manual_decision TEXT,
-            ocr_engine TEXT,
-            ocr_confidence REAL
+            ocr_results_json TEXT,
+            best_engine TEXT
         );
         CREATE TABLE IF NOT EXISTS images (
             session_id TEXT,
@@ -80,19 +75,27 @@ def init_db():
             PRIMARY KEY (session_id, filename)
         );
     """)
-    conn.commit()
+    # Migration: add engines column if missing (for old deployments)
+    try:
+        conn.execute("ALTER TABLE sessions ADD COLUMN engines TEXT")
+        conn.commit()
+    except Exception:
+        pass
+    # Migration: add new columns to results if missing
+    for col in ["ocr_results_json TEXT", "best_engine TEXT"]:
+        try:
+            conn.execute(f"ALTER TABLE results ADD COLUMN {col}")
+            conn.commit()
+        except Exception:
+            pass
     conn.close()
 
-
-# ─── Lifespan ────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     yield
 
-
-# ─── App ─────────────────────────────────────────────────────────────────────
 
 app = FastAPI(lifespan=lifespan, title="OCR Localization Checker")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -110,14 +113,10 @@ def _push_event(session_id: str, event: dict):
             pass
 
 
-# ─── Routes: UI ──────────────────────────────────────────────────────────────
-
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
-
-# ─── Routes: Image proxy ─────────────────────────────────────────────────────
 
 @app.get("/image/{session_id}/{filename:path}")
 async def get_image(session_id: str, filename: str):
@@ -149,11 +148,9 @@ async def get_image(session_id: str, filename: str):
     return Response(content=bytes(row["data"]), media_type=media_type)
 
 
-# ─── Routes: SSE progress ────────────────────────────────────────────────────
-
 @app.get("/progress/{session_id}")
 async def progress(session_id: str):
-    q: asyncio.Queue = asyncio.Queue(maxsize=100)
+    q: asyncio.Queue = asyncio.Queue(maxsize=200)
     _sse_queues[session_id] = q
 
     async def event_stream() -> AsyncGenerator[str, None]:
@@ -166,43 +163,44 @@ async def progress(session_id: str):
                     if data.get("event") in ("done", "error"):
                         break
                 except asyncio.TimeoutError:
-                    yield "data: {\"event\": \"ping\"}\n\n"
+                    yield 'data: {"event": "ping"}\n\n'
         finally:
             _sse_queues.pop(session_id, None)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-# ─── Routes: Upload & process ────────────────────────────────────────────────
+_VALID_ENGINES = set(ALL_ENGINES)
 
-_VALID_ENGINES = {"google", "azure", "ocrspace"}
 
 @app.post("/upload")
 async def upload(
     zip_file: UploadFile = File(...),
-    engine: Optional[str] = Form("google"),
+    engines: Optional[str] = Form("google"),  # comma-separated list
     section_number: Optional[int] = Form(None),
     section_name: Optional[str] = Form(None),
 ):
-    if engine not in _VALID_ENGINES:
-        engine = "google"
+    # Parse engines list
+    selected = [e.strip() for e in (engines or "google").split(",") if e.strip() in _VALID_ENGINES]
+    if not selected:
+        selected = ["google"]
 
     session_id = str(uuid.uuid4())
     zip_bytes = await zip_file.read()
 
     conn = get_db()
     conn.execute(
-        "INSERT INTO sessions VALUES (?,?,?,?,?,?,?)",
-        (session_id, time.time(), "pending", 0, 0, 0, 0),
+        "INSERT INTO sessions (session_id, created_at, status, total, pass_count, fail_count, manual_count, engines) VALUES (?,?,?,?,?,?,?,?)",
+        (session_id, time.time(), "pending", 0, 0, 0, 0, ",".join(selected)),
     )
     conn.commit()
     conn.close()
 
     asyncio.create_task(
-        _process_session(session_id, zip_bytes, section_number, section_name, engine)
+        _process_session(session_id, zip_bytes, section_number, section_name, selected)
     )
 
-    return JSONResponse({"session_id": session_id})
+    return JSONResponse({"session_id": session_id, "engines": selected})
 
 
 async def _process_session(
@@ -210,7 +208,7 @@ async def _process_session(
     zip_bytes: bytes,
     hint_number: Optional[int],
     hint_name: Optional[str],
-    engine: str = "google",
+    engines: List[str],
 ):
     conn = get_db()
     conn.execute(
@@ -238,25 +236,20 @@ async def _process_session(
                 for sec in ref_sections:
                     if hint_lower in sec.name.lower():
                         locked_section_number = sec.number
-                        logger.info(
-                            "Resolved hint_name=%r -> section #%d (%s) from lang=%s",
-                            hint_name, locked_section_number, sec.name, ref_lang
-                        )
                         break
 
         conn.execute(
             "UPDATE sessions SET total=? WHERE session_id=?", (total, session_id)
         )
         conn.commit()
-
-        _push_event(session_id, {"event": "start", "total": total})
+        _push_event(session_id, {"event": "start", "total": total, "engines": engines})
 
         pass_count = fail_count = manual_count = 0
 
         for idx, lang in enumerate(langs):
             image_bytes = contents.images[lang]
             image_name  = contents.image_names[lang]
-            image_key = image_name.split("/")[-1]
+            image_key   = image_name.split("/")[-1]
 
             conn.execute(
                 "INSERT OR REPLACE INTO images VALUES (?,?,?)",
@@ -266,23 +259,40 @@ async def _process_session(
 
             _push_event(session_id, {
                 "event": "progress", "idx": idx, "lang": lang,
-                "step": "ocr", "message": f"OCR {lang} [{engine}]..."
+                "step": "ocr", "message": f"OCR {lang} [{', '.join(engines)}]..."
             })
-            ocr_result = await asyncio.get_event_loop().run_in_executor(
-                None, run_ocr, image_bytes, engine
-            )
-            ocr_text_raw = ocr_result.text
-            ocr_text_display = clean_for_display(ocr_text_raw)
-            logger.info("lang=%s image=%s ocr_len=%d conf=%.3f engine=%s",
-                        lang, image_key, len(ocr_text_raw), ocr_result.confidence, ocr_result.engine)
 
-            text_name = ""
+            # Run all selected engines
+            ocr_results = await asyncio.get_event_loop().run_in_executor(
+                None, run_ocr_multi, image_bytes, engines
+            )
+
+            # Pick best (highest confidence) for section matching
+            best_engine = None
+            best_text   = ""
+            best_conf   = -1.0
+            for eng, res in ocr_results.items():
+                if res.confidence > best_conf and res.text:
+                    best_conf   = res.confidence
+                    best_text   = res.text
+                    best_engine = eng
+
+            # Build per-engine display dict
+            ocr_results_display = {
+                eng: clean_for_display(res.text)
+                for eng, res in ocr_results.items()
+            }
+
+            logger.info("lang=%s best_engine=%s best_conf=%.3f ocr_len=%d",
+                        lang, best_engine, best_conf, len(best_text))
+
             ref_text = ""
             section_name_found = ""
-            section_num_found = None
-            status = "MANUAL"
-            score_val = 0.0
-            reason = "no_text_file"
+            section_num_found  = None
+            status     = "MANUAL"
+            score_val  = 0.0
+            reason     = "no_text_file"
+            text_name  = ""
 
             if lang in contents.texts:
                 fname, file_bytes = contents.texts[lang]
@@ -298,29 +308,24 @@ async def _process_session(
                 )
 
                 selection = await asyncio.get_event_loop().run_in_executor(
-                    None, select_best, sections, ocr_text_raw, lang, locked_section_number, hint_name
+                    None, select_best, sections, best_text, lang,
+                    locked_section_number, hint_name
                 )
 
                 status = selection.status
                 reason = selection.reason
                 if selection.best:
-                    ref_text = clean_for_display(selection.best.section.content_text)
+                    ref_text           = clean_for_display(selection.best.section.content_text)
                     section_name_found = selection.best.section.name
-                    section_num_found = selection.best.section.number
-                    score_val = selection.best.score
+                    section_num_found  = selection.best.section.number
+                    score_val          = selection.best.score
 
                     if locked_section_number is None and section_num_found is not None:
                         locked_section_number = section_num_found
-                        logger.info("Locked section #%d (%s) from lang=%s",
-                                    locked_section_number, section_name_found, lang)
 
                 logger.info(
-                    "lang=%s status=%s reason=%s section=%s locked_num=%s "
-                    "ocr_norm='%.60s' ref_norm='%.60s'",
+                    "lang=%s status=%s reason=%s section=%s",
                     lang, status, reason, section_name_found,
-                    locked_section_number,
-                    normalize_strict(ocr_text_raw),
-                    normalize_strict(ref_text),
                 )
             else:
                 status = "MANUAL"
@@ -333,23 +338,32 @@ async def _process_session(
             else:
                 manual_count += 1
 
+            # Store per-engine OCR texts + confidences as JSON
+            ocr_json = json.dumps({
+                eng: {
+                    "text": ocr_results_display.get(eng, ""),
+                    "confidence": round(ocr_results[eng].confidence, 4),
+                }
+                for eng in engines
+                if eng in ocr_results
+            })
+
             conn.execute(
                 """INSERT INTO results
-                   (session_id, lang, image_name, text_name, ocr_text, ref_text,
+                   (session_id, lang, image_name, text_name, ref_text,
                     section_name, section_number, status, score, reason,
-                    ocr_engine, ocr_confidence)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (session_id, lang, image_key, text_name, ocr_text_display, ref_text,
+                    ocr_results_json, best_engine)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (session_id, lang, image_key, text_name, ref_text,
                  section_name_found, section_num_found, status, score_val, reason,
-                 ocr_result.engine, ocr_result.confidence),
+                 ocr_json, best_engine),
             )
             conn.commit()
 
             _push_event(session_id, {
                 "event": "item", "idx": idx, "lang": lang,
                 "image_name": image_key, "status": status,
-                "engine": ocr_result.engine,
-                "confidence": round(ocr_result.confidence, 3),
+                "best_engine": best_engine,
             })
 
         conn.execute(
@@ -362,6 +376,7 @@ async def _process_session(
         _push_event(session_id, {
             "event": "done",
             "pass": pass_count, "fail": fail_count, "manual": manual_count,
+            "engines": engines,
         })
 
     except Exception as exc:
@@ -374,8 +389,6 @@ async def _process_session(
     finally:
         conn.close()
 
-
-# ─── Routes: Results ─────────────────────────────────────────────────────────
 
 @app.get("/results/{session_id}")
 async def get_results(
@@ -392,31 +405,32 @@ async def get_results(
         conn.close()
         return JSONResponse({"error": "session not found"}, status_code=404)
 
-    query = "SELECT * FROM results WHERE session_id=?"
-    params: list = [session_id]
-    if hide_pass:
-        query += " AND status != 'PASS'"
-
+    base_q = "SELECT * FROM results WHERE session_id=?" + (" AND status != 'PASS'" if hide_pass else "")
     total_rows = conn.execute(
-        f"SELECT COUNT(*) FROM results WHERE session_id=?" +
-        (" AND status != 'PASS'" if hide_pass else ""),
+        "SELECT COUNT(*) FROM results WHERE session_id=?" + (" AND status != 'PASS'" if hide_pass else ""),
         [session_id],
     ).fetchone()[0]
 
-    query += " ORDER BY id LIMIT ? OFFSET ?"
-    params += [per_page, (page - 1) * per_page]
-
-    rows = conn.execute(query, params).fetchall()
+    rows = conn.execute(
+        base_q + " ORDER BY id LIMIT ? OFFSET ?",
+        [session_id, per_page, (page - 1) * per_page],
+    ).fetchall()
     conn.close()
 
     results = []
     for r in rows:
+        ocr_data = {}
+        try:
+            raw_json = r["ocr_results_json"]
+            if raw_json:
+                ocr_data = json.loads(raw_json)
+        except Exception:
+            pass
         results.append({
             "id": r["id"],
             "lang": r["lang"],
             "image_name": r["image_name"],
             "text_name": r["text_name"],
-            "ocr_text": r["ocr_text"],
             "ref_text": r["ref_text"],
             "section_name": r["section_name"],
             "section_number": r["section_number"],
@@ -424,9 +438,16 @@ async def get_results(
             "score": r["score"],
             "reason": r["reason"],
             "manual_decision": r["manual_decision"],
-            "ocr_engine": r["ocr_engine"] if "ocr_engine" in r.keys() else None,
-            "ocr_confidence": r["ocr_confidence"] if "ocr_confidence" in r.keys() else None,
+            "ocr_results": ocr_data,       # {engine: {text, confidence}}
+            "best_engine": r["best_engine"],
         })
+
+    # Retrieve engines list from session
+    try:
+        engines_str = session["engines"] or "google"
+        engines_list = [e for e in engines_str.split(",") if e]
+    except Exception:
+        engines_list = ["google"]
 
     return JSONResponse({
         "session": {
@@ -436,6 +457,7 @@ async def get_results(
             "pass_count": session["pass_count"],
             "fail_count": session["fail_count"],
             "manual_count": session["manual_count"],
+            "engines": engines_list,
         },
         "results": results,
         "page": page,
@@ -445,22 +467,16 @@ async def get_results(
     })
 
 
-# ─── Routes: Manual review decision ─────────────────────────────────────────
-
 @app.post("/decide/{result_id}")
 async def decide(result_id: int, decision: str = Form(...)):
     if decision not in ("ok", "error"):
         return JSONResponse({"error": "invalid decision"}, status_code=400)
     conn = get_db()
-    conn.execute(
-        "UPDATE results SET manual_decision=? WHERE id=?", (decision, result_id)
-    )
+    conn.execute("UPDATE results SET manual_decision=? WHERE id=?", (decision, result_id))
     conn.commit()
     conn.close()
     return JSONResponse({"ok": True})
 
-
-# ─── Routes: Debug OCR ───────────────────────────────────────────────────────
 
 @app.post("/debug/ocr")
 async def debug_ocr(zip_file: UploadFile = File(...)):
@@ -469,29 +485,26 @@ async def debug_ocr(zip_file: UploadFile = File(...)):
     langs = sorted(contents.images.keys())
     if not langs:
         return JSONResponse({"error": "no images found"})
-
     results = []
     for lang in langs[:2]:
         image_bytes = contents.images[lang]
-        image_name = contents.image_names[lang]
-
-        ocr_result = await asyncio.get_event_loop().run_in_executor(None, run_ocr, image_bytes)
-        ocr_text = ocr_result.text
-
-        sections_data = []
-        ref_info = {}
+        ocr_results = await asyncio.get_event_loop().run_in_executor(
+            None, run_ocr_multi, image_bytes, ALL_ENGINES
+        )
+        best = max(ocr_results.values(), key=lambda r: r.confidence, default=None)
+        best_text = best.text if best else ""
+        sections_data, ref_info = [], {}
         if lang in contents.texts:
             fname, file_bytes = contents.texts[lang]
             sections = await asyncio.get_event_loop().run_in_executor(
                 None, extract_sections, file_bytes, fname
             )
             selection = await asyncio.get_event_loop().run_in_executor(
-                None, select_best, sections, ocr_text, lang, None, None
+                None, select_best, sections, best_text, lang, None, None
             )
             for s in sections:
                 sections_data.append({
-                    "number": s.number,
-                    "name": s.name,
+                    "number": s.number, "name": s.name,
                     "content_preview": s.content_text[:80],
                     "norm_strict": normalize_strict(s.content_text),
                 })
@@ -501,25 +514,19 @@ async def debug_ocr(zip_file: UploadFile = File(...)):
                     "status": selection.status,
                     "reason": selection.reason,
                     "strict_equal": selection.best.strict_equal,
-                    "ocr_norm": normalize_strict(ocr_text),
-                    "ref_norm": normalize_strict(selection.best.section.content_text),
                 }
-
         results.append({
             "lang": lang,
-            "image_name": image_name,
-            "ocr_text_raw": ocr_text,
-            "ocr_text_display": clean_for_display(ocr_text),
-            "ocr_confidence": ocr_result.confidence,
-            "ocr_engine": ocr_result.engine,
+            "image_name": contents.image_names[lang],
+            "ocr_engines": {
+                eng: {"text": r.text[:200], "confidence": r.confidence}
+                for eng, r in ocr_results.items()
+            },
             "sections": sections_data,
             "match": ref_info,
         })
-
     return JSONResponse(results)
 
-
-# ─── Routes: Download error images ZIP ───────────────────────────────────────
 
 @app.get("/download/{session_id}")
 async def download_errors(session_id: str):
@@ -532,16 +539,13 @@ async def download_errors(session_id: str):
         (session_id,),
     ).fetchall()
     conn.close()
-
     if not rows:
         return JSONResponse({"error": "no error images"}, status_code=404)
-
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for row in rows:
             zf.writestr(row["image_name"], bytes(row["data"]))
     buf.seek(0)
-
     return Response(
         content=buf.read(),
         media_type="application/zip",
