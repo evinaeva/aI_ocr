@@ -1,7 +1,21 @@
 /* OCR Localization Checker — frontend */
 'use strict';
 
-// ── State ──────────────────────────────────────────────────────────────────
+// ── Engine colors ─────────────────────────────────────────────────────────
+const ENGINE_COLORS = {
+  google:   '#4285f4',
+  azure:    '#0078d4',
+  ocrspace: '#ff6b35',
+  none:     '#999',
+};
+const ENGINE_LABELS = {
+  google:   'Google Vision',
+  azure:    'Azure CV',
+  ocrspace: 'OCR.Space',
+  none:     'None',
+};
+
+// ── State ──────────────────────────────────────────────────────────────
 const state = {
   sessionId: null,
   page: 1,
@@ -11,7 +25,7 @@ const state = {
   status: 'idle',
 };
 
-// ── DOM refs ──────────────────────────────────────────────────────────────
+// ── DOM refs ────────────────────────────────────────────────────────────
 const $uploadSection   = document.getElementById('upload-section');
 const $progressSection = document.getElementById('progress-section');
 const $summarySection  = document.getElementById('summary-section');
@@ -32,12 +46,12 @@ const $btnNew          = document.getElementById('btn-new');
 const $resultsBody     = document.getElementById('results-body');
 const $pagination      = document.getElementById('pagination');
 
-// ── File input label ───────────────────────────────────────────────────────
+// ── File input label ──────────────────────────────────────────────────────
 $zipFile.addEventListener('change', () => {
   $fileLabelText.textContent = $zipFile.files[0]?.name || 'Choose ZIP file…';
 });
 
-// ── Upload form submit ─────────────────────────────────────────────────────
+// ── Upload form submit ────────────────────────────────────────────────────
 $uploadForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const file = $zipFile.files[0];
@@ -68,7 +82,7 @@ $uploadForm.addEventListener('submit', async (e) => {
   }
 });
 
-// ── SSE ────────────────────────────────────────────────────────────────────
+// ── SSE ────────────────────────────────────────────────────────────────
 function subscribeSSE(sessionId) {
   const es = new EventSource(`/progress/${sessionId}`);
   let total = 0;
@@ -76,18 +90,24 @@ function subscribeSSE(sessionId) {
 
   es.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
+
     if (msg.event === 'ping') return;
+
     if (msg.event === 'start') {
       total = msg.total;
       setProgress(0, total, 'Starting…');
     }
+
     if (msg.event === 'progress') {
       setProgress(done, total, msg.message || '');
     }
+
     if (msg.event === 'item') {
       done++;
-      setProgress(done, total, `Processed ${msg.lang} → ${msg.status}`);
+      const eng = msg.engine ? ` [${ENGINE_LABELS[msg.engine] || msg.engine}]` : '';
+      setProgress(done, total, `Processed ${msg.lang} → ${msg.status}${eng}`);
     }
+
     if (msg.event === 'done') {
       es.close();
       setProgress(total, total, 'Done!');
@@ -98,6 +118,7 @@ function subscribeSSE(sessionId) {
       $resultsSection.style.display = '';
       loadResults();
     }
+
     if (msg.event === 'error') {
       es.close();
       $progressSection.style.display = 'none';
@@ -109,7 +130,9 @@ function subscribeSSE(sessionId) {
 
   es.onerror = () => {
     es.close();
-    if (state.status !== 'done') showError('Connection lost. Reload to retry.');
+    if (state.status !== 'done') {
+      showError('Connection lost. Reload to retry.');
+    }
   };
 }
 
@@ -119,22 +142,23 @@ function setProgress(done, total, msg) {
   $progressMsg.textContent = msg;
 }
 
-// ── Summary ────────────────────────────────────────────────────────────────
-function updateSummary({ pass = 0, fail = 0, manual = 0 }) {
-  const total = pass + fail + manual;
+// ── Summary ────────────────────────────────────────────────────────────
+function updateSummary({ pass: p = 0, fail = 0, manual = 0 }) {
+  const total = p + fail + manual;
   $sTotal.textContent  = total;
-  $sPass.textContent   = pass;
+  $sPass.textContent   = p;
   $sFail.textContent   = fail;
   $sManual.textContent = manual;
   if (fail > 0 || manual > 0) $btnDownload.style.display = '';
 }
 
-// ── Load results ───────────────────────────────────────────────────────────
+// ── Load results ────────────────────────────────────────────────────────
 async function loadResults() {
   if (!state.sessionId) return;
   const url = `/results/${state.sessionId}?page=${state.page}&hide_pass=${state.hidePass}&per_page=${state.perPage}`;
   const resp = await fetch(url);
   const data = await resp.json();
+
   if (data.error) { showError(data.error); return; }
 
   const s = data.session;
@@ -148,37 +172,19 @@ async function loadResults() {
   renderPagination(data.page, data.total_pages);
 }
 
-// ── Text helpers ───────────────────────────────────────────────────────────
-
-/**
- * Split text into non-empty lines for display.
- */
-function textLines(text) {
-  if (!text) return [];
-  return text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+// ── Engine badge helper ─────────────────────────────────────────────────
+function engineBadge(engine, confidence) {
+  if (!engine || engine === 'none') return '';
+  const color = ENGINE_COLORS[engine] || '#999';
+  const label = ENGINE_LABELS[engine] || engine;
+  const confStr = confidence != null ? ` ${Math.round(confidence * 100)}%` : '';
+  return `<span class="engine-badge" style="--eng-color:${color}">
+    <span class="engine-dot" style="background:${color}"></span>
+    ${esc(label)}${confStr}
+  </span>`;
 }
 
-/**
- * Render two text columns aligned line-by-line.
- * Both columns get the same number of rows — shorter one gets blank padding.
- */
-function renderAlignedTexts(ocrText, refText) {
-  const ocrLines = textLines(ocrText);
-  const refLines = textLines(refText);
-  const len = Math.max(ocrLines.length, refLines.length, 1);
-
-  let ocrHtml = '';
-  let refHtml = '';
-  for (let i = 0; i < len; i++) {
-    const o = ocrLines[i] || '';
-    const r = refLines[i] || '';
-    ocrHtml += `<span class="text-line${o ? '' : ' text-line-empty'}">${esc(o) || '&nbsp;'}</span>`;
-    refHtml += `<span class="text-line${r ? '' : ' text-line-empty'}">${esc(r) || '&nbsp;'}</span>`;
-  }
-  return { ocrHtml, refHtml };
-}
-
-// ── Table rendering ────────────────────────────────────────────────────────
+// ── Table rendering ─────────────────────────────────────────────────────
 function renderTable(rows) {
   $resultsBody.innerHTML = '';
   if (!rows.length) {
@@ -191,8 +197,6 @@ function renderTable(rows) {
       ? `/image/${state.sessionId}/${encodeURIComponent(row.image_name)}`
       : null;
 
-    const { ocrHtml, refHtml } = renderAlignedTexts(row.ocr_text || '', row.ref_text || '');
-
     tr.innerHTML = `
       <td class="img-cell">
         ${imgSrc
@@ -204,13 +208,14 @@ function renderTable(rows) {
              <div class="thumb-label">${esc(row.lang?.toUpperCase() || '')}</div>`
           : '<span style="color:#ccc">—</span>'}
       </td>
-      <td class="text-cell">${ocrHtml || '<span style="color:#ccc">—</span>'}</td>
-      <td class="text-cell">${refHtml || '<span style="color:#ccc">—</span>'}</td>
+      <td class="text-cell">${formatText(row.ocr_text || '')}</td>
+      <td class="text-cell">${formatText(row.ref_text || '')}</td>
       <td>
         <span class="badge badge-${(row.status||'manual').toLowerCase()}">${esc(row.status||'MANUAL')}</span>
         ${row.section_name
           ? `<span class="badge-section">${row.section_number ? row.section_number + '. ' : ''}${esc(row.section_name)}</span>`
           : ''}
+        ${engineBadge(row.ocr_engine, row.ocr_confidence)}
       </td>
       <td class="review-cell" data-id="${row.id}" data-decision="${row.manual_decision || ''}">
         ${renderReviewButtons(row)}
@@ -219,6 +224,7 @@ function renderTable(rows) {
     $resultsBody.appendChild(tr);
   });
 
+  // Attach image error handlers after DOM insertion
   document.querySelectorAll('.thumb-wrap img.thumb').forEach(img => {
     img.addEventListener('error', () => {
       img.style.display = 'none';
@@ -228,6 +234,7 @@ function renderTable(rows) {
     img.addEventListener('click', () => openLightbox(img.dataset.full));
   });
 
+  // Bind review buttons
   document.querySelectorAll('.btn-ok, .btn-err').forEach(btn => {
     btn.addEventListener('click', handleDecision);
   });
@@ -238,8 +245,12 @@ function renderReviewButtons(row) {
     return '<span style="color:#ccc;font-size:.75rem">—</span>';
   }
   const dec = row.manual_decision;
-  if (dec === 'ok') return '<span class="decision-ok">✓ OK</span>';
-  if (dec === 'error') return '<span class="decision-err">✗ ERROR</span>';
+  if (dec === 'ok') {
+    return '<span class="decision-ok">✓ OK</span>';
+  }
+  if (dec === 'error') {
+    return '<span class="decision-err">✗ ERROR</span>';
+  }
   return `
     <button class="btn btn-sm btn-ok" data-id="${row.id}" data-action="ok">OK</button>
     <button class="btn btn-sm btn-err" data-id="${row.id}" data-action="error">ERROR</button>
@@ -260,7 +271,15 @@ async function handleDecision(e) {
   if (action === 'error') $btnDownload.style.display = '';
 }
 
-// ── Pagination ────────────────────────────────────────────────────────────
+// ── Text formatting ─────────────────────────────────────────────────────
+function formatText(text) {
+  if (!text) return '<span style="color:#ccc">—</span>';
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+  if (!lines.length) return '<span style="color:#ccc">—</span>';
+  return lines.map(l => `<span class="text-line">${esc(l)}</span>`).join('');
+}
+
+// ── Pagination ──────────────────────────────────────────────────────────
 function renderPagination(current, total) {
   $pagination.innerHTML = '';
   if (total <= 1) return;
@@ -276,16 +295,18 @@ function renderPagination(current, total) {
 
   $pagination.appendChild(makeBtn('«', 1, current === 1, false));
   $pagination.appendChild(makeBtn('‹', current-1, current === 1, false));
+
   const start = Math.max(1, current - 2);
   const end   = Math.min(total, current + 2);
   for (let p = start; p <= end; p++) {
     $pagination.appendChild(makeBtn(p, p, false, p === current));
   }
+
   $pagination.appendChild(makeBtn('›', current+1, current === total, false));
   $pagination.appendChild(makeBtn('»', total, current === total, false));
 }
 
-// ── Controls ──────────────────────────────────────────────────────────────
+// ── Controls ────────────────────────────────────────────────────────────
 $hidePass.addEventListener('change', () => {
   state.hidePass = $hidePass.checked;
   state.page = 1;
@@ -293,7 +314,8 @@ $hidePass.addEventListener('change', () => {
 });
 
 $btnDownload.addEventListener('click', () => {
-  if (state.sessionId) window.location.href = `/download/${state.sessionId}`;
+  if (state.sessionId)
+    window.location.href = `/download/${state.sessionId}`;
 });
 
 $btnNew.addEventListener('click', () => {
@@ -311,7 +333,7 @@ $btnNew.addEventListener('click', () => {
   $pagination.innerHTML = '';
 });
 
-// ── Lightbox ──────────────────────────────────────────────────────────────
+// ── Lightbox ────────────────────────────────────────────────────────────
 const lightboxOverlay = document.createElement('div');
 lightboxOverlay.className = 'lightbox-overlay';
 const lightboxImg = document.createElement('img');
@@ -324,7 +346,7 @@ function openLightbox(src) {
   lightboxOverlay.classList.add('open');
 }
 
-// ── Utils ─────────────────────────────────────────────────────────────────
+// ── Utils ───────────────────────────────────────────────────────────────
 function esc(str) {
   if (str == null) return '';
   return String(str)

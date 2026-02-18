@@ -34,6 +34,7 @@ steps:
       - '--concurrency=10'
       - '--max-instances=5'
       - '--set-env-vars=DB_PATH=/tmp/sessions.db'
+      - '--update-secrets=OCR_SPACE_API_KEY=OCR_SPACE_API_KEY:latest'
 
 images:
   - 'europe-west1-docker.pkg.dev/project-d245d8c8-8548-47d2-a04/ai-ocr/ai-ocr'

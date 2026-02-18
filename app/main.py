@@ -29,7 +29,7 @@ from .zip_processor import process_zip
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ─── Paths ───────────────────────────────────────────────────────────────────
+# ─── Paths ──────────────────────────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
@@ -69,7 +69,9 @@ def init_db():
             status TEXT,
             score REAL,
             reason TEXT,
-            manual_decision TEXT
+            manual_decision TEXT,
+            ocr_engine TEXT,
+            ocr_confidence REAL
         );
         CREATE TABLE IF NOT EXISTS images (
             session_id TEXT,
@@ -120,13 +122,11 @@ async def index(request: Request):
 @app.get("/image/{session_id}/{filename:path}")
 async def get_image(session_id: str, filename: str):
     conn = get_db()
-    # Try exact filename first, then basename only
     row = conn.execute(
         "SELECT data FROM images WHERE session_id=? AND filename=?",
         (session_id, filename),
     ).fetchone()
     if not row:
-        # fallback: match by basename
         basename = filename.split("/")[-1]
         row = conn.execute(
             "SELECT data FROM images WHERE session_id=? AND filename=?",
@@ -265,7 +265,6 @@ async def _process_session(
                 None, run_ocr, image_bytes
             )
             ocr_text_raw = ocr_result.text
-            # Clean OCR for display: remove arrows, bullets, emoji, brackets
             ocr_text_display = clean_for_display(ocr_text_raw)
             logger.info("lang=%s image=%s ocr_len=%d conf=%.3f engine=%s",
                         lang, image_key, len(ocr_text_raw), ocr_result.confidence, ocr_result.engine)
@@ -291,7 +290,6 @@ async def _process_session(
                     None, extract_sections, file_bytes, fname
                 )
 
-                # Matching uses raw OCR text (normalize_strict handles cleanup)
                 selection = await asyncio.get_event_loop().run_in_executor(
                     None, select_best, sections, ocr_text_raw, lang, locked_section_number, hint_name
                 )
@@ -299,7 +297,6 @@ async def _process_session(
                 status = selection.status
                 reason = selection.reason
                 if selection.best:
-                    # Reference for display: no emoji, no placeholders, no CTA brackets
                     ref_text = clean_for_display(selection.best.section.content_text)
                     section_name_found = selection.best.section.name
                     section_num_found = selection.best.section.number
@@ -332,17 +329,20 @@ async def _process_session(
             conn.execute(
                 """INSERT INTO results
                    (session_id, lang, image_name, text_name, ocr_text, ref_text,
-                    section_name, section_number, status, score, reason)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                # Store cleaned OCR text for display
+                    section_name, section_number, status, score, reason,
+                    ocr_engine, ocr_confidence)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (session_id, lang, image_key, text_name, ocr_text_display, ref_text,
-                 section_name_found, section_num_found, status, score_val, reason),
+                 section_name_found, section_num_found, status, score_val, reason,
+                 ocr_result.engine, ocr_result.confidence),
             )
             conn.commit()
 
             _push_event(session_id, {
                 "event": "item", "idx": idx, "lang": lang,
                 "image_name": image_key, "status": status,
+                "engine": ocr_result.engine,
+                "confidence": round(ocr_result.confidence, 3),
             })
 
         conn.execute(
@@ -417,6 +417,8 @@ async def get_results(
             "score": r["score"],
             "reason": r["reason"],
             "manual_decision": r["manual_decision"],
+            "ocr_engine": r["ocr_engine"] if "ocr_engine" in r.keys() else None,
+            "ocr_confidence": r["ocr_confidence"] if "ocr_confidence" in r.keys() else None,
         })
 
     return JSONResponse({
