@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OCR Localization Checker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -11,20 +13,52 @@
 
   <!-- HEADER -->
   <header class="header">
-    <h1>🔍 OCR Localization Checker</h1>
+    <div class="header-inner">
+      <span class="header-icon">🔍</span>
+      <h1>OCR Localization Checker</h1>
+    </div>
   </header>
 
-  <!-- UPLOAD FORM -->
-  <section class="upload-section card" id="upload-section">
+  <!-- UPLOAD ZONE -->
+  <section class="card" id="upload-section">
     <h2>Upload ZIP</h2>
+    <p class="card-hint">ZIP with images/ and texts/ folders, or nested ZIPs</p>
     <form id="upload-form">
-      <div class="form-row">
-        <label for="zip-file" class="file-label">
-          <span id="file-label-text">Choose ZIP file…</span>
-          <input type="file" id="zip-file" accept=".zip" required>
-        </label>
+      <div class="drop-zone" id="drop-zone">
+        <div class="drop-zone-inner" id="drop-zone-inner">
+          <span class="drop-icon">📂</span>
+          <span id="file-label-text">Drop ZIP here or click to browse</span>
+        </div>
+        <input type="file" id="zip-file" accept=".zip" required>
       </div>
-      <div class="form-row hints-row">
+
+      <!-- ENGINE SELECTOR -->
+      <div class="engine-section">
+        <h3>Select OCR Engine</h3>
+        <div class="engine-chips" id="engine-chips">
+          <label class="engine-chip" data-engine="google">
+            <input type="radio" name="engine" value="google" checked>
+            <span class="engine-dot" style="background:#4285f4"></span>
+            <span class="engine-label">Google Vision</span>
+            <span class="engine-badge-type">cloud</span>
+          </label>
+          <label class="engine-chip" data-engine="azure">
+            <input type="radio" name="engine" value="azure">
+            <span class="engine-dot" style="background:#0078d4"></span>
+            <span class="engine-label">Azure CV</span>
+            <span class="engine-badge-type">cloud</span>
+          </label>
+          <label class="engine-chip" data-engine="ocrspace">
+            <input type="radio" name="engine" value="ocrspace">
+            <span class="engine-dot" style="background:#ff6b35"></span>
+            <span class="engine-label">OCR.Space</span>
+            <span class="engine-badge-type">cloud</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- HINTS -->
+      <div class="hints-row">
         <div class="hint-field">
           <label for="section-number">Section number <span class="hint-tag">optional</span></label>
           <input type="number" id="section-number" placeholder="e.g. 5" min="1">
@@ -34,21 +68,27 @@
           <input type="text" id="section-name" placeholder="e.g. PIC">
         </div>
       </div>
-      <button type="submit" class="btn btn-primary" id="submit-btn">Check</button>
+
+      <button type="submit" class="btn btn-primary" id="submit-btn" disabled>
+        <span class="btn-icon">▶</span> Check
+      </button>
     </form>
   </section>
 
   <!-- PROGRESS -->
-  <section class="progress-section card" id="progress-section" style="display:none">
+  <section class="card" id="progress-section" style="display:none">
     <h2>Processing…</h2>
     <div class="progress-bar-wrap">
       <div class="progress-bar" id="progress-bar"></div>
     </div>
-    <p class="progress-msg" id="progress-msg">Starting…</p>
+    <div class="progress-meta">
+      <span id="progress-msg">Starting…</span>
+      <span id="progress-timer" class="progress-timer"></span>
+    </div>
   </section>
 
   <!-- SUMMARY -->
-  <section class="summary-section card" id="summary-section" style="display:none">
+  <section class="card" id="summary-section" style="display:none">
     <div class="summary-row">
       <span class="summary-item">Total: <strong id="s-total">0</strong></span>
       <span class="summary-item pass">PASS: <strong id="s-pass">0</strong></span>
@@ -62,7 +102,7 @@
       <button class="btn btn-sm" id="btn-download" style="display:none">
         ⬇ Download error images
       </button>
-      <button class="btn btn-sm btn-secondary" id="btn-new">New check</button>
+      <button class="btn btn-sm btn-secondary" id="btn-new">✕ New check</button>
     </div>
   </section>
 
@@ -82,10 +122,15 @@
         <tbody id="results-body"></tbody>
       </table>
     </div>
-    <!-- Pagination -->
     <div class="pagination" id="pagination"></div>
   </section>
 
+</div>
+
+<!-- LIGHTBOX -->
+<div class="lightbox-overlay" id="lightbox">
+  <button class="lightbox-close" id="lightbox-close">✕</button>
+  <img id="lightbox-img">
 </div>
 
 <script src="/static/app.js"></script>
