@@ -33,7 +33,7 @@ body {
 }
 
 .app {
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 20px 16px 60px;
 }
@@ -132,6 +132,7 @@ body {
   display: flex;
   gap: 10px;
   flex-wrap: wrap;
+  margin-bottom: 8px;
 }
 .engine-chip {
   display: inline-flex;
@@ -149,7 +150,9 @@ body {
   border-color: var(--muted);
   background: var(--card-hover);
 }
-.engine-chip input[type="radio"] {
+/* Hide both radio and checkbox inputs inside chips */
+.engine-chip input[type="radio"],
+.engine-chip input[type="checkbox"] {
   display: none;
 }
 .engine-chip.selected {
@@ -177,6 +180,29 @@ body {
   border-radius: 4px;
   background: rgba(255,255,255,.07);
   color: var(--text-secondary);
+}
+.engine-hint {
+  font-size: .75rem;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* — Confidence badge in OCR cell — */
+.conf-badge {
+  display: inline-block;
+  font-size: .68rem;
+  font-family: var(--mono);
+  color: var(--muted);
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.06);
+}
+.conf-best {
+  color: var(--ok);
+  background: rgba(72,187,120,.1);
+  border-color: rgba(72,187,120,.2);
 }
 
 /* — Hints row — */
@@ -342,6 +368,13 @@ body {
   position: sticky;
   top: 0;
   z-index: 2;
+  white-space: nowrap;
+}
+.results-table th .engine-dot {
+  display: inline-block;
+  vertical-align: middle;
+  margin-right: 5px;
+  margin-bottom: 1px;
 }
 .results-table td {
   padding: 10px 14px;
@@ -391,8 +424,8 @@ body {
   word-break: break-word;
   font-family: var(--mono);
   font-size: .78rem;
-  max-width: 280px;
-  min-width: 150px;
+  max-width: 260px;
+  min-width: 130px;
   line-height: 1.5;
 }
 .text-line { display: block; min-height: 1.4em; }
@@ -417,7 +450,7 @@ body {
   font-weight: 400;
 }
 
-/* Engine badge in results */
+/* Engine badge in results (legacy, kept for compatibility) */
 .engine-result-badge {
   display: inline-flex;
   align-items: center;
@@ -541,10 +574,7 @@ body {
 
 /* — Responsive — */
 @media (max-width: 700px) {
-  .results-table th:nth-child(2),
-  .results-table td:nth-child(2),
-  .results-table th:nth-child(3),
-  .results-table td:nth-child(3) { display: none; }
   .thumb { width: 60px; height: 60px; }
   .engine-chips { flex-direction: column; }
+  .text-cell { max-width: 160px; min-width: 100px; }
 }
