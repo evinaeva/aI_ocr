@@ -46,6 +46,11 @@
   .modal-close { background: none; border: none; font-size: 1.4rem; cursor: pointer; color: #6b7280; line-height: 1; }
   .modal-body { overflow: auto; flex: 1; }
   .json-pre { background: #1e1e2e; color: #cdd6f4; padding: 1rem; border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.55; white-space: pre; overflow-x: auto; margin: 0; }
+
+  .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.4rem; }
+  .page-header h2 { margin: 0; }
+  .btn-editor { background: #7c3aed; color: #fff; text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.9rem; border-radius: 6px; font-size: 0.88rem; font-weight: 600; transition: background 0.15s; }
+  .btn-editor:hover { background: #6d28d9; }
 </style>
 </head>
 <body>
@@ -59,7 +64,11 @@
 
   <div class="page-card card">
     <a href="/" class="back-link">← Back</a>
-    <h2>Templates</h2>
+
+    <div class="page-header">
+      <h2>Templates</h2>
+      <a href="/templates/editor" class="btn-editor">✏️ Editor</a>
+    </div>
 
     <div class="upload-section">
       <h3>Upload Template JSON</h3>
@@ -186,9 +195,9 @@ function addRowToTable(t) {
     <td style="font-family:'JetBrains Mono',monospace;font-size:0.82rem;">${t.source_size[0]}×${t.source_size[1]}</td>
     <td style="font-size:0.82rem;color:#6b7280;">${t.updated_at_utc||'—'}</td>
     <td><div class="actions">
-      <button class="btn btn-secondary" onclick="viewTemplate('${escHtml(t.template_name)}')" >View</button>
+      <button class="btn btn-secondary" onclick="viewTemplate('${escHtml(t.template_name)}')">View</button>
       <a class="btn btn-secondary" href="/api/templates/${encodeURIComponent(t.template_name)}" download="${escHtml(t.template_name)}.json">Download</a>
-      <button class="btn btn-danger" onclick="deleteTemplate('${escHtml(t.template_name)}')" >Delete</button>
+      <button class="btn btn-danger" onclick="deleteTemplate('${escHtml(t.template_name)}')">Delete</button>
     </div></td>`;
   tbody.appendChild(tr);
 }
