@@ -26,6 +26,7 @@ from .zip_processor import process_zip
 from .version import APP_VERSION, BUILD_TIME_UTC, get_build_info
 from .logging_utils import log_event
 from .pipeline.template_routes import router as template_router
+from .pipeline.template_editor_routes import editor_router
 from .pipeline import template_store
 
 logging.basicConfig(level=logging.INFO)
@@ -105,6 +106,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, title="OCR Localization Checker")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(template_router)
+app.include_router(editor_router)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _sse_queues: Dict[str, asyncio.Queue] = {}
@@ -149,6 +151,31 @@ async def templates_list(request: Request):
         "request": request,
         "templates": tmpl_objects,
     })
+
+
+# Editor logging endpoints (called by JS, no-op beyond logging)
+@app.post("/api/templates/_log_editor_save")
+async def log_editor_save(request: Request):
+    try:
+        body = await request.json()
+        log_event(
+            "template_editor_saved",
+            template_name=body.get("template_name", ""),
+            zones_count=body.get("zones_count", 0),
+        )
+    except Exception:
+        pass
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/templates/_log_editor_load")
+async def log_editor_load(request: Request):
+    try:
+        body = await request.json()
+        log_event("template_editor_load", template_name=body.get("template_name", ""))
+    except Exception:
+        pass
+    return JSONResponse({"ok": True})
 
 
 @app.get("/image/{session_id}/{filename:path}")
