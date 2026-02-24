@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>About — OCR Localization Checker</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<style>
+  .about-card { max-width: 600px; margin: 2rem auto; }
+  .about-card h2 { margin-bottom: 1.2rem; }
+  .info-table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+  .info-table td { padding: 0.5rem 0.75rem; border-bottom: 1px solid #e5e7eb; font-family: 'JetBrains Mono', monospace; font-size: 0.9rem; }
+  .info-table td:first-child { color: #6b7280; width: 40%; }
+  .badge-set { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; background: #d1fae5; color: #065f46; font-size: 0.8rem; }
+  .badge-notset { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px; background: #fee2e2; color: #991b1b; font-size: 0.8rem; }
+  .engine-list { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .engine-tag { padding: 0.25rem 0.75rem; border-radius: 999px; background: #eff6ff; color: #1d4ed8; font-size: 0.85rem; font-family: 'JetBrains Mono', monospace; }
+  .back-link { display: inline-block; margin-bottom: 1.5rem; color: #6b7280; text-decoration: none; font-size: 0.9rem; }
+  .back-link:hover { color: #374151; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="header">
+    <div class="header-inner">
+      <span class="header-icon">🔍</span>
+      <h1>OCR Localization Checker</h1>
+    </div>
+  </header>
+
+  <div class="about-card card">
+    <a href="/" class="back-link">← Back</a>
+    <h2>About</h2>
+
+    <h3>Build</h3>
+    <table class="info-table">
+      <tr><td>APP_VERSION</td><td>{{ app_version }}</td></tr>
+      <tr><td>BUILD_TIME_UTC</td><td>{{ build_time_utc }}</td></tr>
+    </table>
+
+    <h3>OCR Engines</h3>
+    <div class="engine-list" style="margin-bottom: 1.5rem;">
+      {% for engine in all_engines %}
+        <span class="engine-tag">{{ engine }}</span>
+      {% endfor %}
+    </div>
+
+    <h3>Environment</h3>
+    <table class="info-table">
+      <tr>
+        <td>AZURE_OCR_ENDPOINT</td>
+        <td>{% if env_azure_endpoint %}<span class="badge-set">SET</span>{% else %}<span class="badge-notset">NOT_SET</span>{% endif %}</td>
+      </tr>
+      <tr>
+        <td>AZURE_OCR_KEY</td>
+        <td>{% if env_azure_key %}<span class="badge-set">SET</span>{% else %}<span class="badge-notset">NOT_SET</span>{% endif %}</td>
+      </tr>
+      <tr>
+        <td>OCR_SPACE_API_KEY</td>
+        <td>{% if env_ocrspace_key %}<span class="badge-set">SET</span>{% else %}<span class="badge-notset">NOT_SET</span>{% endif %}</td>
+      </tr>
+    </table>
+  </div>
+</div>
+</body>
+</html>
