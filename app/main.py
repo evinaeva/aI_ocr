@@ -25,6 +25,8 @@ from .section_matcher import extract_sections, select_best
 from .zip_processor import process_zip
 from .version import APP_VERSION, BUILD_TIME_UTC, get_build_info
 from .logging_utils import log_event
+from .pipeline.template_routes import router as template_router
+from .pipeline import template_store
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -102,6 +104,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan, title="OCR Localization Checker")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.include_router(template_router)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _sse_queues: Dict[str, asyncio.Queue] = {}
@@ -131,6 +134,20 @@ async def about(request: Request):
         "env_azure_endpoint": bool(os.getenv("AZURE_OCR_ENDPOINT", "").strip()),
         "env_azure_key": bool(os.getenv("AZURE_OCR_KEY", "").strip()),
         "env_ocrspace_key": bool(os.getenv("OCR_SPACE_API_KEY", "").strip()),
+    })
+
+
+@app.get("/templates", response_class=HTMLResponse)
+async def templates_list(request: Request):
+    names = template_store.list_templates()
+    tmpl_objects = []
+    for name in names:
+        t = template_store.get_template(name)
+        if t:
+            tmpl_objects.append(t)
+    return templates.TemplateResponse("templates_list.html", {
+        "request": request,
+        "templates": tmpl_objects,
     })
 
 
@@ -461,7 +478,7 @@ async def get_results(
             "score": r["score"],
             "reason": r["reason"],
             "manual_decision": r["manual_decision"],
-            "ocr_results": ocr_data,       # {engine: {text, confidence}}
+            "ocr_results": ocr_data,
             "best_engine": r["best_engine"],
         })
 
