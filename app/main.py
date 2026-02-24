@@ -23,6 +23,8 @@ from .normalizer import normalize_strict, clean_for_display
 from .ocr import run_ocr_multi, ALL_ENGINES
 from .section_matcher import extract_sections, select_best
 from .zip_processor import process_zip
+from .version import APP_VERSION, BUILD_TIME_UTC, get_build_info
+from .logging_utils import log_event
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -94,6 +96,7 @@ def init_db():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    log_event("app_start", app_version=APP_VERSION)
     yield
 
 
@@ -116,6 +119,19 @@ def _push_event(session_id: str, event: dict):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/about", response_class=HTMLResponse)
+async def about(request: Request):
+    return templates.TemplateResponse("about.html", {
+        "request": request,
+        "app_version": APP_VERSION,
+        "build_time_utc": BUILD_TIME_UTC,
+        "all_engines": ALL_ENGINES,
+        "env_azure_endpoint": bool(os.getenv("AZURE_OCR_ENDPOINT", "").strip()),
+        "env_azure_key": bool(os.getenv("AZURE_OCR_KEY", "").strip()),
+        "env_ocrspace_key": bool(os.getenv("OCR_SPACE_API_KEY", "").strip()),
+    })
 
 
 @app.get("/image/{session_id}/{filename:path}")
@@ -218,7 +234,12 @@ async def _process_session(
 
     locked_section_number: Optional[int] = hint_number
 
+    # Derive archive name from session_id for logging (no filename available here)
+    archive_label = f"session:{session_id}"
+
     try:
+        log_event("run_start", run_id=session_id, archive_name=archive_label)
+
         contents = process_zip(zip_bytes)
         langs = sorted(contents.images.keys())
         total = len(langs)
@@ -378,6 +399,7 @@ async def _process_session(
             "pass": pass_count, "fail": fail_count, "manual": manual_count,
             "engines": engines,
         })
+        log_event("run_end", run_id=session_id, status="ok")
 
     except Exception as exc:
         logger.exception("Processing error for session %s", session_id)
@@ -386,6 +408,7 @@ async def _process_session(
         )
         conn.commit()
         _push_event(session_id, {"event": "error", "message": str(exc)})
+        log_event("run_end", run_id=session_id, status="error")
     finally:
         conn.close()
 
