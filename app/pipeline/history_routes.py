@@ -11,11 +11,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from app.logging_utils import log_event
-from app.pipeline.firestore_store import (
-    FIRESTORE_AVAILABLE,
-    get_db,
-    firestore_timestamp_to_iso,
-)
+from app.pipeline.firestore_store import get_db, firestore_timestamp_to_iso
 from app.pipeline.persistence import COLLECTION_RUNS, COLLECTION_ZONES
 
 history_router = APIRouter()
@@ -23,6 +19,10 @@ history_router = APIRouter()
 
 @history_router.get("/api/templates/{template_name}/history")
 async def get_history(template_name: str):
+    """
+    Returns up to 50 runs for a template, ordered by created_at DESC.
+    Returns empty runs list (not 404) when no runs exist (§6.1).
+    """
     try:
         db = get_db()
         query = (
@@ -31,8 +31,9 @@ async def get_history(template_name: str):
             .order_by("created_at", direction="DESCENDING")
             .limit(50)
         )
+        docs = query.stream()
         runs = []
-        for doc in query.stream():
+        for doc in docs:
             d = doc.to_dict()
             runs.append({
                 "run_id": d.get("run_id", ""),
@@ -43,14 +44,20 @@ async def get_history(template_name: str):
                 "review_overall_status": d.get("review_overall_status", "PENDING"),
             })
         return JSONResponse({"template_name": template_name, "runs": runs})
+
     except Exception:
         return JSONResponse({"error": "internal_error"}, status_code=500)
 
 
 @history_router.get("/api/runs/{run_id}")
 async def get_run(run_id: str):
+    """
+    Returns full run with all zones ordered by zone_index ASC.
+    404 if header doc not found (§6.2).
+    """
     try:
         db = get_db()
+
         header_ref = db.collection(COLLECTION_RUNS).document(run_id)
         header_snap = header_ref.get()
         if not header_snap.exists:
@@ -63,8 +70,9 @@ async def get_run(run_id: str):
             .where("run_id", "==", run_id)
             .order_by("zone_index")
         )
+        zone_docs = zones_query.stream()
         zones = []
-        for zdoc in zones_query.stream():
+        for zdoc in zone_docs:
             zd = zdoc.to_dict()
             review = zd.get("review", {})
             zones.append({
@@ -88,12 +96,19 @@ async def get_run(run_id: str):
             "ocr_overall_status": h.get("ocr_overall_status", "OK"),
             "review_overall_status": h.get("review_overall_status", "PENDING"),
         })
+
     except Exception:
         return JSONResponse({"error": "internal_error"}, status_code=500)
 
 
 @history_router.post("/api/runs/{run_id}/zones/{zone_index}/review")
 async def update_zone_review(run_id: str, zone_index: int, body: dict):
+    """
+    Update zone review status. Uses Firestore transaction to keep header
+    review_counts consistent (§7.2).
+
+    Body: { "review_status": "APPROVED"|"REJECTED", "review_comment": "..." }
+    """
     review_status = body.get("review_status")
     if review_status not in ("APPROVED", "REJECTED"):
         return JSONResponse(
@@ -125,11 +140,11 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
             if not zone_snap.exists:
                 return "zone_not_found"
 
-            header_data = header_snap.to_dict()
-            zone_data = zone_snap.to_dict()
+            h = header_snap.to_dict()
+            z = zone_snap.to_dict()
 
-            prev_status = zone_data.get("review", {}).get("review_status", "PENDING")
-            counts = dict(header_data.get("review_counts", {"pending": 0, "approved": 0, "rejected": 0}))
+            prev_status = z.get("review", {}).get("review_status", "PENDING")
+            counts = dict(h.get("review_counts", {"pending": 0, "approved": 0, "rejected": 0}))
 
             if prev_status != review_status:
                 counts[prev_status.lower()] = max(0, counts.get(prev_status.lower(), 0) - 1)
@@ -147,6 +162,7 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
                 "review.review_comment": review_comment,
                 "review.reviewed_at": _fs.SERVER_TIMESTAMP,
             })
+
             transaction.update(header_ref, {
                 "review_counts": counts,
                 "review_overall_status": overall,
@@ -161,7 +177,14 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
         if result == "zone_not_found":
             return JSONResponse({"error": "zone_not_found"}, status_code=404)
 
-        log_event("zone_review_updated", run_id=run_id, zone_index=zone_index, new_status=review_status)
+        log_event(
+            "zone_review_updated",
+            run_id=run_id,
+            zone_index=zone_index,
+            new_status=review_status,
+        )
+
         return JSONResponse({"ok": True, "review_status": review_status})
+
     except Exception:
         return JSONResponse({"error": "persistence_error"}, status_code=500)
