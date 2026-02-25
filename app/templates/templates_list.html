@@ -49,8 +49,11 @@
 
   .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.4rem; }
   .page-header h2 { margin: 0; }
+  .page-header-actions { display: flex; gap: 0.5rem; align-items: center; }
   .btn-editor { background: #7c3aed; color: #fff; text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.9rem; border-radius: 6px; font-size: 0.88rem; font-weight: 600; transition: background 0.15s; }
   .btn-editor:hover { background: #6d28d9; }
+  .btn-preview { background: #0891b2; color: #fff; text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.9rem; border-radius: 6px; font-size: 0.88rem; font-weight: 600; transition: background 0.15s; }
+  .btn-preview:hover { background: #0e7490; }
 </style>
 </head>
 <body>
@@ -67,7 +70,10 @@
 
     <div class="page-header">
       <h2>Templates</h2>
-      <a href="/templates/editor" class="btn-editor">✏️ Editor</a>
+      <div class="page-header-actions">
+        <a href="/templates/preview" class="btn-preview">🖼️ Preview crops</a>
+        <a href="/templates/editor" class="btn-editor">✏️ Editor</a>
+      </div>
     </div>
 
     <div class="upload-section">
