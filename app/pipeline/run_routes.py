@@ -1,9 +1,14 @@
 """
-Phase 4 + Phase 5: Run routes.
+Phase 4 + Phase 5 + Phase 6: Run routes.
 
 POST /api/templates/{template_name}/run?lang=<bcp47_or_project_lang_code>
   - Accepts: multipart/form-data with image file
   - Returns: JSON run result with additive validation block per zone
+
+Phase 6 additions (additive):
+  - Synchronous persistence to Firestore before returning response (§3)
+  - Response always includes: persisted, persistence_error, persistence_error_type (§4)
+  - Persistence failure → HTTP 200 with persisted=False (§5)
 """
 from __future__ import annotations
 
@@ -20,6 +25,7 @@ from app.pipeline.models import ZoneDef
 from app.pipeline.ocr_dispatcher import dispatch_zone_ocr
 from app.pipeline.consensus import resolve_consensus
 from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
+from app.pipeline.persistence import persist_run
 
 run_router = APIRouter()
 
@@ -70,22 +76,17 @@ async def run_template(
     Run per-zone OCR + consensus + similarity validation for all zones.
 
     Phase 5 (additive): adds a `validation` block to every zone in the response.
-    Old callers without `lang` param continue to work (validation_applied=false).
+    Phase 6 (additive): persists run to Firestore synchronously; adds
+      persisted / persistence_error / persistence_error_type to response.
 
     Returns JSON:
     {
       "run_id": "...",
       "template_name": "...",
-      "zones": [
-        {
-          "zone_name": "...",
-          "engines_used": [...],
-          "engine_results": [...],
-          "consensus": {...},
-          "validation": {...}
-        },
-        ...
-      ]
+      "persisted": true|false,
+      "persistence_error": false|true,
+      "persistence_error_type": null|"firestore_write_failed",
+      "zones": [ ... ]
     }
 
     Logs: only run_id, template_name, zone_name, engine counts, rule_used,
@@ -191,9 +192,18 @@ async def run_template(
         log_event("run_end", run_id=run_id, status="ok",
                   template_name=template_name, zones_processed=len(zone_results))
 
+        # ── Phase 6: synchronous persistence (§3) ────────────────────────────
+        persistence_flags = persist_run(
+            run_id=run_id,
+            template_name=template_name,
+            lang=effective_lang or None,
+            zones=zone_results,
+        )
+
         return JSONResponse({
             "run_id": run_id,
             "template_name": template_name,
+            **persistence_flags,
             "zones": zone_results,
         })
 
