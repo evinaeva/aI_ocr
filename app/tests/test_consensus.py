@@ -1,7 +1,8 @@
 """
 Test suite for app/pipeline/consensus.py
 
-Covers all 9 mandatory cases from Phase 4 contract.
+Covers all 9 mandatory cases from Phase 4 Canonical v3 contract,
+plus additional determinism tests for majority internal selection.
 """
 import sys
 import os
@@ -23,6 +24,7 @@ def make_result(engine, text, confidence=None, error=None):
 
 
 class TestNormalizeForConsensus(unittest.TestCase):
+
     def test_lowercase(self):
         self.assertEqual(normalize_for_consensus("Hello World"), "hello world")
 
@@ -30,7 +32,6 @@ class TestNormalizeForConsensus(unittest.TestCase):
         self.assertEqual(normalize_for_consensus("hello   world"), "hello world")
 
     def test_remove_punctuation(self):
-        # Backtick, %, <, > must NOT be removed
         result = normalize_for_consensus("hello, world!")
         self.assertNotIn(",", result)
         self.assertNotIn("!", result)
@@ -67,7 +68,7 @@ class TestConsensus(unittest.TestCase):
         self.assertEqual(result["reason"], "all_engines_failed")
         self.assertIsNone(result["selected_engine"])
 
-    # ── Case 3: Majority ──────────────────────────────────────────────────────
+    # ── Case 3: Majority – basic ──────────────────────────────────────────────
     def test_majority(self):
         results = [
             make_result("google", "BUY TOKENS", confidence=0.95),
@@ -78,6 +79,38 @@ class TestConsensus(unittest.TestCase):
         self.assertEqual(result["rule_used"], "majority")
         self.assertEqual(result["selected_text"], "BUY TOKENS")
         self.assertEqual(result["zone_status"], "OK")
+
+    # ── Case 3b: Majority – highest confidence within group wins ─────────────
+    def test_majority_internal_confidence_wins(self):
+        """
+        Phase 4 B1: within majority group winner is
+        (1) highest valid confidence, (2) lex engine name.
+        google has higher confidence than azure, both in majority group.
+        Winner must be google (conf 0.95 > 0.90).
+        """
+        results = [
+            make_result("google", "SAME TEXT", confidence=0.95),
+            make_result("azure", "SAME TEXT", confidence=0.90),
+            make_result("ocrspace", "DIFFERENT", confidence=0.85),
+        ]
+        result = resolve_consensus(results, engines_configured=True)
+        self.assertEqual(result["rule_used"], "majority")
+        self.assertEqual(result["selected_engine"], "google")   # higher conf
+        self.assertEqual(result["zone_status"], "OK")
+
+    # ── Case 3c: Majority – no confidence in group → lex engine wins ─────────
+    def test_majority_no_confidence_lex_engine(self):
+        """
+        Both majority members have no valid confidence.
+        azure < ocrspace alphabetically → azure wins.
+        """
+        results = [
+            make_result("ocrspace", "SAME", confidence=None),
+            make_result("azure", "SAME", confidence=None),
+        ]
+        result = resolve_consensus(results, engines_configured=True)
+        self.assertEqual(result["rule_used"], "majority")
+        self.assertEqual(result["selected_engine"], "azure")
 
     # ── Case 4: Best confidence ───────────────────────────────────────────────
     def test_best_confidence(self):
@@ -104,16 +137,18 @@ class TestConsensus(unittest.TestCase):
         # Longest text wins
         self.assertEqual(result["selected_text"], "Hello World")
 
-    # ── Case 6: Tie-break deterministic ──────────────────────────────────────
+    # ── Case 6: Tie-break deterministic (same text, same conf) ───────────────
     def test_tie_break_deterministic(self):
-        # Two engines with same text, same confidence → alphabetically first engine
+        """
+        Same text, same confidence → alphabetically first engine wins.
+        azure < ocrspace.
+        """
         results = [
             make_result("ocrspace", "same text", confidence=0.90),
             make_result("azure", "same text", confidence=0.90),
         ]
         result = resolve_consensus(results, engines_configured=True)
         self.assertEqual(result["rule_used"], "majority")
-        # azure < ocrspace alphabetically
         self.assertEqual(result["selected_engine"], "azure")
 
     # ── Case 7: Low confidence ────────────────────────────────────────────────
@@ -128,7 +163,7 @@ class TestConsensus(unittest.TestCase):
 
     # ── Case 8: Empty string is valid candidate ───────────────────────────────
     def test_empty_string_valid(self):
-        # Empty string with valid confidence participates in selection
+        """Empty string with valid confidence participates in majority."""
         results = [
             make_result("google", "", confidence=0.95),
             make_result("azure", "", confidence=0.90),
@@ -137,10 +172,12 @@ class TestConsensus(unittest.TestCase):
         self.assertEqual(result["rule_used"], "majority")
         self.assertEqual(result["selected_text"], "")
         self.assertEqual(result["zone_status"], "OK")
+        # google has higher confidence → should be selected
+        self.assertEqual(result["selected_engine"], "google")
 
     # ── Case 9: Confidence out of range treated as None ───────────────────────
     def test_confidence_out_of_range(self):
-        # confidence=1.5 is outside [0.0, 1.0] → treated as None
+        """confidence=1.5 outside [0.0, 1.0] → treated as None."""
         results = [
             make_result("google", "Hello", confidence=1.5),
             make_result("azure", "World", confidence=None),

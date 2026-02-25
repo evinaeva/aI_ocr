@@ -8,11 +8,9 @@ POST /api/templates/{template_name}/run
 from __future__ import annotations
 
 import io
-import time
 import uuid
-from typing import Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
 
@@ -27,8 +25,10 @@ run_router = APIRouter()
 
 def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     """
-    Crop image to zone bbox, scaling bbox coords to actual image size.
-    Returns JPEG bytes.
+    Crop image to zone bbox, scaling bbox from template source_size
+    to actual image pixel dimensions. Returns PNG bytes.
+
+    No OCR text is accessed or logged here.
     """
     img = Image.open(io.BytesIO(image_bytes))
     img_w, img_h = img.size
@@ -51,7 +51,11 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
 
     cropped = img.crop((px1, py1, px2, py2))
     buf = io.BytesIO()
-    cropped.save(buf, format="JPEG")
+    cropped.save(buf, format="PNG")
+    buf.seek(0)
+    # Release image objects explicitly
+    cropped.close()
+    img.close()
     return buf.getvalue()
 
 
@@ -77,17 +81,21 @@ async def run_template(
         ...
       ]
     }
+
+    Logs: only run_id, template_name, zone_name, engine counts, rule_used,
+          zone_status. Never logs OCR text.
     """
     run_id = str(uuid.uuid4())
     try:
-        # Load template
         tmpl = template_store.get_template(template_name)
         if tmpl is None:
             raise HTTPException(status_code=404, detail="Template not found")
 
         image_bytes = await image.read()
 
-        log_event("run_start", run_id=run_id, template_name=template_name)
+        # Log metadata only — no OCR text, no image content
+        log_event("run_start", run_id=run_id, template_name=template_name,
+                  zone_count=len(tmpl.zones))
 
         zone_results = []
 
@@ -95,12 +103,13 @@ async def run_template(
             engines_configured = len(zone.engines) > 0
 
             if not engines_configured:
-                # No engines: skip OCR, send empty to consensus
-                engine_results = []
                 consensus = resolve_consensus(
                     engine_results=[],
                     engines_configured=False,
                 )
+                # Log metadata only
+                log_event("zone_skip", run_id=run_id, zone_name=zone.name,
+                          reason="no_engines_configured")
                 zone_results.append({
                     "zone_name": zone.name,
                     "engines_used": zone.engines,
@@ -109,30 +118,41 @@ async def run_template(
                 })
                 continue
 
-            # Crop zone from image
+            # Crop zone from image; fall back to full image on error
             try:
                 zone_bytes = _crop_zone(image_bytes, zone, tmpl.source_size)
-            except Exception as exc:
-                # If crop fails, use full image
+            except Exception:
                 zone_bytes = image_bytes
 
-            # Dispatch OCR for this zone
+            # Dispatch per-engine OCR for this zone
             engine_results = dispatch_zone_ocr(zone, zone_bytes)
 
-            # Resolve consensus
+            # Resolve deterministic consensus
             consensus = resolve_consensus(
                 engine_results=engine_results,
                 engines_configured=True,
             )
 
+            # Log metadata only — rule_used and zone_status, no OCR text
+            log_event(
+                "zone_result",
+                run_id=run_id,
+                zone_name=zone.name,
+                rule_used=consensus.get("rule_used"),
+                zone_status=consensus.get("zone_status"),
+                reason=consensus.get("reason"),
+                engines_count=len(engine_results),
+            )
+
             zone_results.append({
                 "zone_name": zone.name,
-                "engines_used": zone.engines,
+                "engines_used": zone.engines,          # original order per contract
                 "engine_results": [r.to_dict() for r in engine_results],
                 "consensus": consensus,
             })
 
-        log_event("run_end", run_id=run_id, status="ok")
+        log_event("run_end", run_id=run_id, status="ok",
+                  template_name=template_name, zones_processed=len(zone_results))
 
         return JSONResponse({
             "run_id": run_id,
@@ -142,6 +162,7 @@ async def run_template(
 
     except HTTPException:
         raise
-    except Exception as exc:
-        log_event("run_end", run_id=run_id, status="error")
+    except Exception:
+        log_event("run_end", run_id=run_id, status="error",
+                  template_name=template_name)
         return JSONResponse({"error": "internal_error"}, status_code=500)

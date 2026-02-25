@@ -20,16 +20,17 @@ from typing import List, Optional
 from .ocr_dispatcher import ZoneEngineResult
 
 # Regex: remove ASCII punctuation only.
-# Backtick, %, <, >, [, ] are NOT removed.
+# Backtick `, %, <, >, [, ] are NOT removed per contract §5.
 _PUNCT_RE = re.compile(r'[!"#$&\'()*+,./:;=?@^_{}|~-]')
 
 
 def normalize_for_consensus(text: str) -> str:
     """
-    Steps:
+    Steps per Phase 4 Canonical v3 §5:
     1. Lowercase (Unicode-aware)
     2. Collapse whitespace (\\s+ -> single space)
     3. Remove ASCII punctuation only (see _PUNCT_RE)
+       Preserved: backtick, %, <, >, [, ]
     4. Strip leading/trailing whitespace
     """
     t = text.lower()
@@ -39,7 +40,7 @@ def normalize_for_consensus(text: str) -> str:
 
 
 def _valid_confidence(confidence) -> Optional[float]:
-    """Return confidence if 0.0 <= conf <= 1.0, else None."""
+    """Return confidence as float if 0.0 <= conf <= 1.0, else None."""
     if confidence is None:
         return None
     try:
@@ -49,6 +50,30 @@ def _valid_confidence(confidence) -> Optional[float]:
     if 0.0 <= c <= 1.0:
         return c
     return None
+
+
+def _pick_from_group(group: List[ZoneEngineResult]) -> ZoneEngineResult:
+    """
+    Pick the representative engine from a majority group.
+
+    Deterministic rule (Phase 4 Canonical v3 §6, B1):
+      (1) highest valid confidence in [0.0, 1.0]
+      (2) lexicographically smaller engine name
+
+    Engines without valid confidence are ranked below all engines with
+    valid confidence, but still participate if no engine has valid confidence.
+    """
+    # Split: those with valid confidence vs those without
+    with_conf = [(r, _valid_confidence(r.confidence)) for r in group
+                 if _valid_confidence(r.confidence) is not None]
+
+    if with_conf:
+        # Sort: highest confidence first, then lex engine name
+        with_conf.sort(key=lambda x: (-x[1], x[0].engine))
+        return with_conf[0][0]
+    else:
+        # No valid confidence in group → lex engine name
+        return min(group, key=lambda r: r.engine)
 
 
 def resolve_consensus(
@@ -92,10 +117,11 @@ def resolve_consensus(
             "reason": "all_engines_failed",
         }
 
-    # ── Sort alphabetically for determinism ───────────────────────────────────
+    # ── Sort alphabetically for determinism in all subsequent steps ───────────
     valid_sorted = sorted(valid, key=lambda r: r.engine)
 
     # ── Step 1: Majority ──────────────────────────────────────────────────────
+    # Group by normalized text
     groups: dict[str, List[ZoneEngineResult]] = {}
     for r in valid_sorted:
         norm = normalize_for_consensus(r.text)
@@ -106,17 +132,17 @@ def resolve_consensus(
     best_group_size = max(len(g) for g in groups.values())
 
     if best_group_size >= 2:
-        # Select group with highest size (tie impossible with max 3 engines
-        # but handle gracefully: pick group whose members are alphabetically first)
+        # Collect all groups of maximum size (tie on size impossible with ≤3 engines,
+        # but handled defensively: pick group with lex-smaller normalized text)
         majority_groups = [
             (norm, g) for norm, g in groups.items() if len(g) == best_group_size
         ]
-        # Deterministic: sort by normalized text
-        majority_groups.sort(key=lambda x: x[0])
+        majority_groups.sort(key=lambda x: x[0])   # deterministic on group text
         _, winning_group = majority_groups[0]
-        # From winning group, pick alphabetically first engine
-        winner = min(winning_group, key=lambda r: r.engine)
-        return _make_result(winner, "majority", valid_sorted)
+
+        # Within winning group: pick by (1) highest valid confidence, (2) lex engine
+        winner = _pick_from_group(winning_group)
+        return _make_result(winner, "majority")
 
     # ── Step 2: Best confidence ───────────────────────────────────────────────
     with_conf = [
@@ -133,10 +159,10 @@ def resolve_consensus(
                 r.engine,
             ),
         )
-        return _make_result(winner, "best_confidence", valid_sorted)
+        return _make_result(winner, "best_confidence")
 
     # ── Step 3: No confidence fallback ────────────────────────────────────────
-    # Longest text, then lex-smaller text, then lex-smaller engine
+    # Longest text (by stripped length), then lex-smaller text, then lex-smaller engine
     winner = min(
         valid_sorted,
         key=lambda r: (
@@ -145,21 +171,19 @@ def resolve_consensus(
             r.engine,
         ),
     )
-    return _make_result(winner, "no_confidence_fallback", valid_sorted)
+    return _make_result(winner, "no_confidence_fallback")
 
 
-def _make_result(
-    winner: ZoneEngineResult,
-    rule_used: str,
-    valid_sorted: List[ZoneEngineResult],
-) -> dict:
+def _make_result(winner: ZoneEngineResult, rule_used: str) -> dict:
     """
-    Evaluate status according to strict priority order:
+    Evaluate zone_status according to strict priority order:
     1. no_engines_configured  (handled before calling this)
     2. all_engines_failed     (handled before calling this)
     3. no_consensus           (rule_used == no_confidence_fallback)
-    4. low_confidence         (confidence < 0.70)
+    4. low_confidence         (winner.confidence < 0.70)
     5. OK
+
+    Never logs OCR text.
     """
     if rule_used == "no_confidence_fallback":
         return {
