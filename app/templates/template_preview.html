@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Preview Crops — OCR Checker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <style>
+    .page-card { max-width: 960px; margin: 2rem auto; }
+    .back-link { display: inline-block; margin-bottom: 1.5rem; color: #6b7280; text-decoration: none; font-size: 0.9rem; }
+    .back-link:hover { color: #374151; }
+    .form-row { margin-bottom: 1rem; }
+    .form-row label { display: block; font-weight: 600; margin-bottom: 0.4rem; font-size: 0.9rem; }
+    .form-row select, .form-row input[type=file] { width: 100%; padding: 0.45rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; font-size: 0.9rem; box-sizing: border-box; }
+    .btn { padding: 0.45rem 1.1rem; border-radius: 6px; border: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: background 0.15s; }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: #1d4ed8; }
+    .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+    .meta-bar { display: flex; gap: 12px; flex-wrap: wrap; margin: 1rem 0; font-size: 0.85rem; }
+    .meta-chip { background: #f3f4f6; border: 1px solid #e5e7eb; padding: 3px 10px; border-radius: 20px; }
+    .meta-chip.upscaled { background: #ffe0b2; border-color: #fb923c; }
+    .zones-grid { display: flex; flex-wrap: wrap; gap: 16px; }
+    .zone-card { background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 12px; width: calc(50% - 8px); box-sizing: border-box; }
+    @media (max-width: 600px) { .zone-card { width: 100%; } }
+    .zone-card h3 { margin: 0 0 8px; font-size: 0.88rem; color: #374151; font-family: 'JetBrains Mono', monospace; }
+    .zone-card img { max-width: 100%; border: 1px solid #d1d5db; border-radius: 4px; display: block; }
+    .zone-meta { font-size: 0.78rem; color: #6b7280; margin-top: 6px; font-family: 'JetBrains Mono', monospace; }
+    #status-msg { color: #dc2626; font-size: 0.9rem; margin-top: 0.75rem; }
+    #spinner { display: none; color: #6b7280; font-size: 0.9rem; margin-top: 0.5rem; }
+  </style>
+</head>
+<body>
+<div class="app">
+  <header class="header">
+    <div class="header-inner">
+      <span class="header-icon">🔍</span>
+      <h1>OCR Localization Checker</h1>
+    </div>
+  </header>
+
+  <div class="page-card card">
+    <a href="/templates" class="back-link">← Templates</a>
+    <h2>Preview Crops</h2>
+    <p style="font-size:0.9rem;color:#6b7280;margin-bottom:1.25rem;">Select a template and upload a banner to verify zone scaling and crops.</p>
+
+    <div class="form-row">
+      <label for="tmpl-select">Template</label>
+      <select id="tmpl-select">
+        <option value="">— select a template —</option>
+        {% for name in template_names %}
+        <option value="{{ name }}">{{ name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="form-row">
+      <label for="img-input">Banner Image</label>
+      <input type="file" id="img-input" accept="image/*" />
+    </div>
+
+    <button class="btn btn-primary" id="generate-btn" onclick="generatePreview()" disabled>Generate Preview Crops</button>
+    <div id="spinner">⏳ Processing…</div>
+    <div id="status-msg"></div>
+
+    <div id="results" style="display:none">
+      <h3 style="margin-top:1.5rem;">Image Info</h3>
+      <div class="meta-bar" id="meta-bar"></div>
+      <h3>Zone Crops</h3>
+      <div class="zones-grid" id="zones-container"></div>
+    </div>
+  </div>
+</div>
+
+<script src="/static/template_preview.js"></script>
+</body>
+</html>

@@ -1,8 +1,11 @@
 """
 Phase 3 — Preview Crops routes.
 
-HTML: GET /templates/preview  (defined here, included via preview_router)
-API:  POST /api/templates/{template_name}/preview-crops
+HTML : GET  /templates/preview
+API  : POST /api/templates/{template_name}/preview-crops
+
+Defined in preview_router; included in main.py via app.include_router(preview_router).
+No other HTML routes added here.
 """
 from __future__ import annotations
 
@@ -14,7 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
 from . import template_store
-from .image_processor import (
+from .preprocessor import (
     crop_to_base64,
     load_image,
     maybe_upscale,
@@ -32,7 +35,7 @@ _jinja = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 async def preview_crops_page(request: Request):
     template_names = template_store.list_templates()
     return _jinja.TemplateResponse(
-        "preview_crops.html",
+        "template_preview.html",
         {"request": request, "template_names": template_names},
     )
 
@@ -67,19 +70,19 @@ async def preview_crops_api(
         )
 
     original_w, original_h = img_original.size
-    source_w, source_h = tmpl.source_size  # template source size
+    source_w, source_h = tmpl.source_size
 
-    # Step 1: maybe_upscale
+    # Step 1: maybe_upscale — produces processed image
     img_processed, upscaled = maybe_upscale(img_original)
     processed_w, processed_h = img_processed.size
 
-    # Step 2: per-zone scale + crop
-    zones_out = []
-    for zone in tmpl.zones:
+    # Step 2: per-zone — scale_bbox always uses processed_size
+    zones_out: List[dict] = []
+    for zone in tmpl.zones:  # preserve order from TemplateDef
         bbox_scaled: List[int] = scale_bbox(
             zone.bbox,
             source_size=[source_w, source_h],
-            actual_size=[processed_w, processed_h],  # ALWAYS processed size
+            actual_size=[processed_w, processed_h],  # ALWAYS processed_size
         )
         crop_b64 = crop_to_base64(img_processed, bbox_scaled)
         zones_out.append(
@@ -87,7 +90,7 @@ async def preview_crops_api(
                 "zone_name": zone.name,
                 "bbox_source": zone.bbox,
                 "bbox_scaled": bbox_scaled,
-                "crop_png_base64": crop_b64,
+                "crop_png_base64": crop_b64,  # no prefix
             }
         )
 
