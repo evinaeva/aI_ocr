@@ -29,7 +29,9 @@ from .pipeline.template_routes import router as template_router
 from .pipeline.template_editor_routes import editor_router
 from .pipeline.preview_routes import preview_router
 from .pipeline.run_routes import run_router
-from .pipeline.history_routes import history_router
+from .pipeline.firestore_store import FIRESTORE_AVAILABLE
+if FIRESTORE_AVAILABLE:
+    from .pipeline.history_routes import history_router
 from .pipeline import template_store
 
 logging.basicConfig(level=logging.INFO)
@@ -112,7 +114,8 @@ app.include_router(template_router)
 app.include_router(editor_router)
 app.include_router(preview_router)
 app.include_router(run_router)
-app.include_router(history_router)
+if FIRESTORE_AVAILABLE:
+    app.include_router(history_router)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _sse_queues: Dict[str, asyncio.Queue] = {}

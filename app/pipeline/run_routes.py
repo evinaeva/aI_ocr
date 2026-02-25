@@ -25,6 +25,7 @@ from app.pipeline.models import ZoneDef
 from app.pipeline.ocr_dispatcher import dispatch_zone_ocr
 from app.pipeline.consensus import resolve_consensus
 from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
+from app.pipeline.firestore_store import FIRESTORE_AVAILABLE
 from app.pipeline.persistence import persist_run
 
 run_router = APIRouter()
@@ -192,20 +193,23 @@ async def run_template(
         log_event("run_end", run_id=run_id, status="ok",
                   template_name=template_name, zones_processed=len(zone_results))
 
-        # ── Phase 6: synchronous persistence (§3) ────────────────────────────
-        persistence_flags = persist_run(
-            run_id=run_id,
-            template_name=template_name,
-            lang=effective_lang or None,
-            zones=zone_results,
-        )
-
-        return JSONResponse({
+        response_payload = {
             "run_id": run_id,
             "template_name": template_name,
-            **persistence_flags,
             "zones": zone_results,
-        })
+        }
+
+        # ── Phase 6: synchronous persistence (§3) ────────────────────────────
+        if FIRESTORE_AVAILABLE:
+            persistence_flags = persist_run(
+                run_id=run_id,
+                template_name=template_name,
+                lang=effective_lang or None,
+                zones=zone_results,
+            )
+            response_payload.update(persistence_flags)
+
+        return JSONResponse(response_payload)
 
     except HTTPException:
         raise
