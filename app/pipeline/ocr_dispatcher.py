@@ -8,6 +8,7 @@ Contract:
 - For each engine in zone.engines, call run_ocr_multi and return ZoneEngineResult list.
 - Engine exceptions are caught; result has error="engine_exception".
 - Never raises.
+- Never logs raw OCR text.
 """
 from __future__ import annotations
 
@@ -16,6 +17,13 @@ import time
 from typing import List
 
 from .models import ZoneDef
+
+# Module-level import so tests can patch 'app.pipeline.ocr_dispatcher.run_ocr_multi'.
+# app/ocr.py is NOT modified — we only import from it.
+try:
+    from app.ocr import run_ocr_multi  # type: ignore
+except ImportError:  # pragma: no cover — only missing in minimal test envs
+    run_ocr_multi = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -57,37 +65,43 @@ def dispatch_zone_ocr(
     Returns list[ZoneEngineResult].
     Returns [] immediately if zone.engines is empty.
     Never raises.
+    Never logs raw OCR text — only engine name and error code.
     """
     if not zone.engines:
         return []
-
-    # Import here to avoid circular imports; ocr.py must not be modified.
-    from app.ocr import run_ocr_multi  # type: ignore
 
     results: List[ZoneEngineResult] = []
 
     for engine_name in zone.engines:
         t0 = time.monotonic()
         try:
+            if run_ocr_multi is None:
+                raise RuntimeError("run_ocr_multi not available")
+
             ocr_map = run_ocr_multi(image_bytes, [engine_name])
             elapsed = (time.monotonic() - t0) * 1000.0
 
             if engine_name in ocr_map:
                 r = ocr_map[engine_name]
-                # run_ocr_multi returns OCRResult with text="" and confidence=0.0 on failure
-                # We treat confidence=0.0 with text="" as a potential engine failure,
-                # but we still return it as a valid result (the OCR ran successfully).
+                # Normalise confidence: treat 0.0 on empty text as None
+                conf = r.confidence
+                if conf == 0.0 and not r.text:
+                    conf = None
                 results.append(
                     ZoneEngineResult(
                         engine=engine_name,
                         text=r.text,
-                        confidence=r.confidence if r.confidence != 0.0 or r.text else None,
+                        confidence=conf,
                         latency_ms=elapsed,
                         error=None,
                     )
                 )
             else:
                 elapsed = (time.monotonic() - t0) * 1000.0
+                # Log metadata only — no OCR text
+                logger.warning(
+                    "dispatch_zone_ocr: engine=%s no_result", engine_name
+                )
                 results.append(
                     ZoneEngineResult(
                         engine=engine_name,
@@ -99,8 +113,12 @@ def dispatch_zone_ocr(
                 )
         except Exception as exc:
             elapsed = (time.monotonic() - t0) * 1000.0
+            # Log metadata only — exc type/message may contain OCR text in theory,
+            # so we log only the exception type string, not the full message.
             logger.warning(
-                "dispatch_zone_ocr: engine=%s exception=%s", engine_name, exc
+                "dispatch_zone_ocr: engine=%s exception_type=%s",
+                engine_name,
+                type(exc).__name__,
             )
             results.append(
                 ZoneEngineResult(
