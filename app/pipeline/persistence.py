@@ -13,17 +13,17 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.logging_utils import log_event
-from app.pipeline.firestore_store import FIRESTORE_AVAILABLE, get_db, firestore_timestamp_to_iso
+from app.pipeline.firestore_store import FIRESTORE_AVAILABLE, get_db
 
 COLLECTION_RUNS = "template_runs"
 COLLECTION_ZONES = "template_run_zones"
 
 
 def _derive_ocr_overall_status(zones: List[Dict[str, Any]]) -> str:
-    """MANUAL if any zone consensus has zone_status==MANUAL, else OK."""
+    """OK if all zones are OK, else MANUAL."""
     for z in zones:
         consensus = z.get("consensus") or {}
-        if consensus.get("zone_status") == "MANUAL":
+        if consensus.get("zone_status") != "OK":
             return "MANUAL"
     return "OK"
 
@@ -41,15 +41,8 @@ def persist_run(
       persisted: bool
       persistence_error: bool
       persistence_error_type: str | None
-
-    On commit failure → persisted=False, persistence_error=True,
-    persistence_error_type="firestore_write_failed".
-    Nothing is left partially written (Firestore batch is atomic).
     """
     if not FIRESTORE_AVAILABLE:
-        # Hard gate: Firestore not installed — treat as persistence failure
-        log_event("persistence_error", run_id=run_id,
-                  error_type="firestore_write_failed")
         return {
             "persisted": False,
             "persistence_error": True,
@@ -57,18 +50,13 @@ def persist_run(
         }
 
     try:
-        db = get_db()
-
-        # Import Timestamp for stored fields (§0.2)
         from google.cloud import firestore as _fs  # type: ignore
 
+        db = get_db()
         zones_count = len(zones)
-        ocr_overall_status = _derive_ocr_overall_status(zones)
 
-        # Build batch
         batch = db.batch()
 
-        # ── Header doc ────────────────────────────────────────────────────────
         header_ref = db.collection(COLLECTION_RUNS).document(run_id)
         header_data = {
             "run_id": run_id,
@@ -76,7 +64,7 @@ def persist_run(
             "lang": lang or None,
             "created_at": _fs.SERVER_TIMESTAMP,
             "zones_count": zones_count,
-            "ocr_overall_status": ocr_overall_status,
+            "ocr_overall_status": _derive_ocr_overall_status(zones),
             "review_overall_status": "PENDING",
             "review_counts": {
                 "pending": zones_count,
@@ -86,7 +74,6 @@ def persist_run(
         }
         batch.set(header_ref, header_data)
 
-        # ── Zone docs ─────────────────────────────────────────────────────────
         for idx, zone in enumerate(zones):
             zone_doc_id = f"{run_id}__{idx}"
             zone_ref = db.collection(COLLECTION_ZONES).document(zone_doc_id)
@@ -95,7 +82,6 @@ def persist_run(
                 "template_name": template_name,
                 "zone_index": idx,
                 "zone_name": zone.get("zone_name", ""),
-                # Entire zone dict from /run preserved verbatim (§2.1)
                 "run_zone_payload": zone,
                 "review": {
                     "review_status": "PENDING",
@@ -105,7 +91,6 @@ def persist_run(
             }
             batch.set(zone_ref, zone_data)
 
-        # Single atomic commit (§1.2 / §3.1)
         batch.commit()
 
         log_event("run_persisted", run_id=run_id, template_name=template_name)
@@ -115,9 +100,8 @@ def persist_run(
             "persistence_error_type": None,
         }
 
-    except Exception as exc:  # noqa: BLE001
-        log_event("persistence_error", run_id=run_id,
-                  error_type="firestore_write_failed")
+    except Exception:  # noqa: BLE001
+        log_event("persistence_error", run_id=run_id, error_type="firestore_write_failed")
         return {
             "persisted": False,
             "persistence_error": True,
