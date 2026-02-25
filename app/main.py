@@ -28,6 +28,7 @@ from .logging_utils import log_event
 from .pipeline.template_routes import router as template_router
 from .pipeline.template_editor_routes import editor_router
 from .pipeline.preview_routes import preview_router
+from .pipeline.run_routes import run_router
 from .pipeline import template_store
 
 logging.basicConfig(level=logging.INFO)
@@ -109,6 +110,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.include_router(template_router)
 app.include_router(editor_router)
 app.include_router(preview_router)
+app.include_router(run_router)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _sse_queues: Dict[str, asyncio.Queue] = {}
@@ -152,6 +154,14 @@ async def templates_list(request: Request):
     return templates.TemplateResponse("templates_list.html", {
         "request": request,
         "templates": tmpl_objects,
+    })
+
+
+@app.get("/templates/{template_name}/run", response_class=HTMLResponse)
+async def template_run_page(request: Request, template_name: str):
+    return templates.TemplateResponse("template_run.html", {
+        "request": request,
+        "template_name": template_name,
     })
 
 
