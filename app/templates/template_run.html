@@ -13,6 +13,7 @@
   .back-link:hover { color: #374151; }
   .run-form { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1.5rem; }
   .run-form input[type=file] { flex: 1; min-width: 200px; font-size: 0.9rem; }
+  .run-form input[type=text] { width: 120px; font-size: 0.9rem; padding: 0.35rem 0.6rem; border: 1px solid #d1d5db; border-radius: 6px; }
   .btn { padding: 0.45rem 1.1rem; border-radius: 6px; border: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: background 0.15s; }
   .btn-primary { background: #2563eb; color: #fff; }
   .btn-primary:hover { background: #1d4ed8; }
@@ -37,6 +38,19 @@
   .consensus-row .label { color: #6b7280; font-size: 0.8rem; }
   .consensus-text { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 4px; padding: 0.2rem 0.5rem; word-break: break-word; }
 
+  /* Phase 5: validation block */
+  .validation-block { margin-top: 0.75rem; padding: 0.6rem 0.75rem; border-radius: 6px; font-size: 0.85rem; border: 1px solid #e5e7eb; background: #fafafa; }
+  .validation-block.skip { color: #6b7280; }
+  .validation-block.error { color: #991b1b; background: #fee2e2; border-color: #fca5a5; }
+  .validation-block.computed { border-color: #d1d5db; }
+  .validation-block.computed.low { border-color: #fca5a5; background: #fff5f5; }
+  .validation-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 0.4rem; }
+  .sim-value { font-family: 'JetBrains Mono', monospace; font-weight: 700; }
+  .sim-value.low { color: #dc2626; }
+  .sim-value.ok  { color: #2e7d32; }
+  .validation-label { color: #6b7280; font-size: 0.78rem; }
+  .vtext { font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; background: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 4px; padding: 0.15rem 0.4rem; word-break: break-word; max-width: 400px; }
+
   #spinner { display: none; margin-left: 0.75rem; color: #6b7280; font-size: 0.9rem; }
   #results-section { display: none; }
   .run-meta { font-size: 0.83rem; color: #6b7280; margin-bottom: 1rem; font-family: 'JetBrains Mono', monospace; }
@@ -60,6 +74,7 @@
 
     <div class="run-form">
       <input type="file" id="image-input" accept="image/*">
+      <input type="text" id="lang-input" placeholder="lang (e.g. en, ru)" title="Optional: language code for expected text validation">
       <button class="btn btn-primary" id="run-btn" onclick="runTemplate()">Run OCR</button>
       <span id="spinner">⏳ Running…</span>
     </div>

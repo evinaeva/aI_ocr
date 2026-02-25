@@ -1,16 +1,16 @@
 """
-Phase 4: Run routes.
+Phase 4 + Phase 5: Run routes.
 
-POST /api/templates/{template_name}/run
+POST /api/templates/{template_name}/run?lang=<bcp47_or_project_lang_code>
   - Accepts: multipart/form-data with image file
-  - Returns: JSON run result
+  - Returns: JSON run result with additive validation block per zone
 """
 from __future__ import annotations
 
 import io
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
 
@@ -19,6 +19,7 @@ from app.pipeline import template_store
 from app.pipeline.models import ZoneDef
 from app.pipeline.ocr_dispatcher import dispatch_zone_ocr
 from app.pipeline.consensus import resolve_consensus
+from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
 
 run_router = APIRouter()
 
@@ -63,9 +64,13 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
 async def run_template(
     template_name: str,
     image: UploadFile = File(...),
+    lang: str = Query(default=""),
 ):
     """
-    Run per-zone OCR + consensus for all zones in the template.
+    Run per-zone OCR + consensus + similarity validation for all zones.
+
+    Phase 5 (additive): adds a `validation` block to every zone in the response.
+    Old callers without `lang` param continue to work (validation_applied=false).
 
     Returns JSON:
     {
@@ -76,7 +81,8 @@ async def run_template(
           "zone_name": "...",
           "engines_used": [...],
           "engine_results": [...],
-          "consensus": {...}
+          "consensus": {...},
+          "validation": {...}
         },
         ...
       ]
@@ -93,9 +99,12 @@ async def run_template(
 
         image_bytes = await image.read()
 
+        # Normalise lang: treat blank/whitespace-only as missing
+        effective_lang = lang.strip() if lang else ""
+
         # Log metadata only — no OCR text, no image content
         log_event("run_start", run_id=run_id, template_name=template_name,
-                  zone_count=len(tmpl.zones))
+                  zone_count=len(tmpl.zones), lang=effective_lang or None)
 
         zone_results = []
 
@@ -107,7 +116,14 @@ async def run_template(
                     engine_results=[],
                     engines_configured=False,
                 )
-                # Log metadata only
+                # Phase 5: validation block (skip — no OCR text available)
+                validation_block, _ = build_validation_result(
+                    lang=effective_lang,
+                    zone_name=zone.name,
+                    expected_texts=getattr(tmpl, "expected_texts", None),
+                    ocr_text="",
+                    run_id=run_id,
+                )
                 log_event("zone_skip", run_id=run_id, zone_name=zone.name,
                           reason="no_engines_configured")
                 zone_results.append({
@@ -115,6 +131,7 @@ async def run_template(
                     "engines_used": zone.engines,
                     "engine_results": [],
                     "consensus": consensus,
+                    "validation": validation_block,
                 })
                 continue
 
@@ -133,6 +150,25 @@ async def run_template(
                 engines_configured=True,
             )
 
+            # Phase 5: compute validation + apply status downgrade
+            selected_text = consensus.get("selected_text") or ""
+            validation_block, sim_raw = build_validation_result(
+                lang=effective_lang,
+                zone_name=zone.name,
+                expected_texts=getattr(tmpl, "expected_texts", None),
+                ocr_text=selected_text,
+                run_id=run_id,
+            )
+
+            # Downgrade zone_status only if it was OK and similarity < threshold
+            if (
+                sim_raw is not None
+                and sim_raw < SIMILARITY_THRESHOLD
+                and consensus.get("zone_status") == "OK"
+            ):
+                consensus["zone_status"] = "MANUAL"
+                consensus["reason"] = "low_similarity"
+
             # Log metadata only — rule_used and zone_status, no OCR text
             log_event(
                 "zone_result",
@@ -146,9 +182,10 @@ async def run_template(
 
             zone_results.append({
                 "zone_name": zone.name,
-                "engines_used": zone.engines,          # original order per contract
+                "engines_used": zone.engines,
                 "engine_results": [r.to_dict() for r in engine_results],
                 "consensus": consensus,
+                "validation": validation_block,
             })
 
         log_event("run_end", run_id=run_id, status="ok",
