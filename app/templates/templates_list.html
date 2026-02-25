@@ -24,6 +24,8 @@
   .btn-danger:hover { background: #b91c1c; }
   .btn-secondary { background: #e5e7eb; color: #374151; font-size: 0.8rem; padding: 0.3rem 0.75rem; }
   .btn-secondary:hover { background: #d1d5db; }
+  .btn-run { background: #16a34a; color: #fff; font-size: 0.8rem; padding: 0.3rem 0.75rem; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; font-weight: 600; transition: background 0.15s; }
+  .btn-run:hover { background: #15803d; }
 
   .alert { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; display: none; }
   .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
@@ -108,6 +110,7 @@
             <td style="font-size:0.82rem;color:#6b7280;">{{ t.updated_at_utc or '—' }}</td>
             <td>
               <div class="actions">
+                <a class="btn-run" href="/templates/{{ t.template_name }}/run">▶ Run</a>
                 <button class="btn btn-secondary" onclick="viewTemplate('{{ t.template_name }}')">View</button>
                 <a class="btn btn-secondary" href="/api/templates/{{ t.template_name }}" download="{{ t.template_name }}.json">Download</a>
                 <button class="btn btn-danger" onclick="deleteTemplate('{{ t.template_name }}')">Delete</button>
@@ -201,6 +204,7 @@ function addRowToTable(t) {
     <td style="font-family:'JetBrains Mono',monospace;font-size:0.82rem;">${t.source_size[0]}×${t.source_size[1]}</td>
     <td style="font-size:0.82rem;color:#6b7280;">${t.updated_at_utc||'—'}</td>
     <td><div class="actions">
+      <a class="btn-run" href="/templates/${encodeURIComponent(t.template_name)}/run">▶ Run</a>
       <button class="btn btn-secondary" onclick="viewTemplate('${escHtml(t.template_name)}')">View</button>
       <a class="btn btn-secondary" href="/api/templates/${encodeURIComponent(t.template_name)}" download="${escHtml(t.template_name)}.json">Download</a>
       <button class="btn btn-danger" onclick="deleteTemplate('${escHtml(t.template_name)}')">Delete</button>
