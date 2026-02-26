@@ -9,9 +9,13 @@ Phase 6 additions (additive):
   - Synchronous persistence to Firestore before returning response (§3)
   - Response always includes: persisted, persistence_error, persistence_error_type (§4)
   - Persistence failure → HTTP 200 with persisted=False (§5)
+
+A2 fix: dispatch_zone_ocr is a sync function; called via asyncio.to_thread
+  to avoid blocking the event loop.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import uuid
 
@@ -133,7 +137,9 @@ async def run_template(
             except Exception:
                 zone_bytes = image_bytes
 
-            engine_results = dispatch_zone_ocr(zone, zone_bytes)
+            # A2: dispatch_zone_ocr is synchronous — run in thread pool to avoid
+            # blocking the event loop under concurrent requests.
+            engine_results = await asyncio.to_thread(dispatch_zone_ocr, zone, zone_bytes)
 
             consensus = resolve_consensus(
                 engine_results=engine_results,
