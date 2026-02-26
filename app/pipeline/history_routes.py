@@ -10,6 +10,8 @@ PERSISTENCE_ENABLED is False, never 404.
 """
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -22,6 +24,7 @@ from app.pipeline.firestore_store import (
 from app.pipeline.persistence import COLLECTION_RUNS, COLLECTION_ZONES
 
 history_router = APIRouter()
+logger = logging.getLogger(__name__)
 
 _DISABLED = JSONResponse(
     {"detail": "Persistence disabled"},
@@ -62,6 +65,7 @@ async def get_history(template_name: str):
         return JSONResponse({"template_name": template_name, "runs": runs})
 
     except Exception:
+        logger.exception("history get_history failed for template_name=%s", template_name)
         return JSONResponse({"error": "internal_error"}, status_code=500)
 
 
@@ -118,6 +122,7 @@ async def get_run(run_id: str):
         })
 
     except Exception:
+        logger.exception("history get_run failed for run_id=%s", run_id)
         return JSONResponse({"error": "internal_error"}, status_code=500)
 
 
@@ -210,4 +215,5 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
         return JSONResponse({"ok": True, "review_status": review_status})
 
     except Exception:
+        logger.exception("history update_zone_review failed for run_id=%s zone_index=%s", run_id, zone_index)
         return JSONResponse({"error": "persistence_error"}, status_code=500)
