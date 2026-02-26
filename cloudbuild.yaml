@@ -33,7 +33,7 @@ steps:
       - '--timeout=300'
       - '--concurrency=10'
       - '--max-instances=5'
-      - '--set-env-vars=DB_PATH=/tmp/sessions.db'
+      - '--update-env-vars=DB_PATH=/tmp/sessions.db,FIRESTORE_AVAILABLE=true'
       - '--update-secrets=OCR_SPACE_API_KEY=OCR_SPACE_API_KEY:latest'
 
 images:
