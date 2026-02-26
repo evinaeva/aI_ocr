@@ -13,6 +13,56 @@ logger = logging.getLogger(__name__)
 ALL_ENGINES = ["google", "azure", "ocrspace"]
 
 
+# ─────────────────────────── Startup validation ──────────────────────────────
+
+_AZURE_WARN_EMITTED = False
+
+
+def _check_azure_config() -> None:
+    """
+    Called once at startup (via _ensure_azure_checked).
+    Logs a structured WARNING if azure is listed in ALL_ENGINES but
+    env vars are missing.  Never raises.
+    """
+    global _AZURE_WARN_EMITTED
+    if _AZURE_WARN_EMITTED:
+        return
+    _AZURE_WARN_EMITTED = True
+
+    endpoint = os.getenv("AZURE_OCR_ENDPOINT", "").strip()
+    key = os.getenv("AZURE_OCR_KEY", "").strip()
+
+    if "azure" in ALL_ENGINES:
+        if not endpoint and not key:
+            logger.warning(
+                '{"event": "azure_config_warning", "message": '
+                '"azure is in ALL_ENGINES but AZURE_OCR_ENDPOINT and AZURE_OCR_KEY are not set; '
+                'azure will be skipped for every OCR call"}'
+            )
+        elif not endpoint:
+            logger.warning(
+                '{"event": "azure_config_warning", "message": '
+                '"azure is in ALL_ENGINES but AZURE_OCR_ENDPOINT is not set; '
+                'azure will be skipped for every OCR call"}'
+            )
+        elif not key:
+            logger.warning(
+                '{"event": "azure_config_warning", "message": '
+                '"azure is in ALL_ENGINES but AZURE_OCR_KEY is not set; '
+                'azure will be skipped for every OCR call"}'
+            )
+        else:
+            logger.info(
+                '{"event": "azure_config_ok", "message": '
+                '"azure env vars present"}'
+            )
+
+
+def emit_startup_warnings() -> None:
+    """Call once from app lifespan to emit engine config warnings."""
+    _check_azure_config()
+
+
 # ─────────────────────────── Google Vision ───────────────────────────────────
 
 def _ocr_google(image_bytes: bytes) -> Optional[tuple[str, float]]:

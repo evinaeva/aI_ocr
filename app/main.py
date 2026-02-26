@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .normalizer import normalize_strict, clean_for_display
-from .ocr import run_ocr_multi, ALL_ENGINES
+from .ocr import run_ocr_multi, ALL_ENGINES, emit_startup_warnings
 from .section_matcher import extract_sections, select_best
 from .zip_processor import process_zip
 from .version import APP_VERSION, BUILD_TIME_UTC, get_build_info
@@ -102,6 +102,8 @@ def init_db():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # B6: emit Azure env var warnings once at startup
+    emit_startup_warnings()
     log_event("app_start", app_version=APP_VERSION)
     yield
 

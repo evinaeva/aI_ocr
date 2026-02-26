@@ -7,6 +7,15 @@ POST /api/runs/{run_id}/zones/{zone_index}/review
 
 Variant A fix: routers are always registered; endpoints return 503 when
 PERSISTENCE_ENABLED is False, never 404.
+
+C8: review_status vocabulary is CONFIRMED/OVERRIDDEN (contract §6).
+    Legacy values APPROVED/REJECTED are mapped on read:
+      APPROVED -> CONFIRMED
+      REJECTED -> OVERRIDDEN
+    On write, only CONFIRMED/OVERRIDDEN are accepted (400 otherwise).
+
+C9: after a stored decision, consensus.zone_status in run_zone_payload
+    is updated to REVIEWED, and reflected in GET /api/runs/{run_id}.
 """
 from __future__ import annotations
 
@@ -30,6 +39,17 @@ _DISABLED = JSONResponse(
     {"detail": "Persistence disabled"},
     status_code=503,
 )
+
+# C8: legacy value mapping for backward-compatible reads
+_LEGACY_STATUS_MAP = {
+    "APPROVED": "CONFIRMED",
+    "REJECTED": "OVERRIDDEN",
+}
+
+
+def _normalize_review_status(status: str) -> str:
+    """Map legacy APPROVED/REJECTED to CONFIRMED/OVERRIDDEN on read."""
+    return _LEGACY_STATUS_MAP.get(status, status)
 
 
 @history_router.get("/api/templates/{template_name}/history")
@@ -75,6 +95,9 @@ async def get_run(run_id: str):
     Returns full run with all zones ordered by zone_index ASC.
     404 if header doc not found (§6.2).
     503 when persistence is disabled.
+
+    C9: consensus.zone_status in run_zone_payload reflects REVIEWED after review.
+    C8: review_status mapped from legacy APPROVED/REJECTED on read.
     """
     if not is_persistence_enabled():
         return JSONResponse({"detail": "Persistence disabled"}, status_code=503)
@@ -99,12 +122,15 @@ async def get_run(run_id: str):
         for zdoc in zone_docs:
             zd = zdoc.to_dict()
             review = zd.get("review", {})
+            raw_status = review.get("review_status", "PENDING")
+            # C8: map legacy values on read
+            mapped_status = _normalize_review_status(raw_status)
             zones.append({
                 "zone_index": zd.get("zone_index"),
                 "zone_name": zd.get("zone_name", ""),
                 "run_zone_payload": zd.get("run_zone_payload", {}),
                 "review": {
-                    "review_status": review.get("review_status", "PENDING"),
+                    "review_status": mapped_status,
                     "review_comment": review.get("review_comment"),
                     "reviewed_at": firestore_timestamp_to_iso(review.get("reviewed_at"))
                     if review.get("reviewed_at") else None,
@@ -132,15 +158,24 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
     Update zone review status.
     503 when persistence is disabled.
 
-    Body: { "review_status": "APPROVED"|"REJECTED", "review_comment": "..." }
+    C8: Body must contain review_status = CONFIRMED | OVERRIDDEN.
+        Legacy values APPROVED/REJECTED are rejected with 400.
+    C9: Updates consensus.zone_status = REVIEWED inside run_zone_payload.
     """
     if not is_persistence_enabled():
         return JSONResponse({"detail": "Persistence disabled"}, status_code=503)
 
     review_status = body.get("review_status")
-    if review_status not in ("APPROVED", "REJECTED"):
+    # C8: only accept new vocabulary; reject legacy values explicitly
+    if review_status not in ("CONFIRMED", "OVERRIDDEN"):
         return JSONResponse(
-            {"error": "invalid_status", "detail": "review_status must be APPROVED or REJECTED"},
+            {
+                "error": "invalid_status",
+                "detail": (
+                    "review_status must be CONFIRMED or OVERRIDDEN. "
+                    "Legacy values APPROVED/REJECTED are no longer accepted."
+                ),
+            },
             status_code=400,
         )
 
@@ -150,6 +185,9 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
             {"error": "comment_too_long", "detail": "review_comment must be \u2264 1000 chars"},
             status_code=400,
         )
+
+    # C8: final_text for OVERRIDDEN
+    final_text = body.get("final_text")
 
     try:
         from google.cloud import firestore as _fs  # type: ignore
@@ -174,12 +212,25 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
             h = header_snap.to_dict()
             z = zone_snap.to_dict()
 
-            prev_status = z.get("review", {}).get("review_status", "PENDING")
+            prev_raw = z.get("review", {}).get("review_status", "PENDING")
+            # Normalize legacy values for counting purposes
+            prev_status = _normalize_review_status(prev_raw)
+
+            # Map current new-vocabulary status to counter key
+            # (CONFIRMED counts as "approved" for aggregate stats)
+            _count_key = {
+                "CONFIRMED": "approved",
+                "OVERRIDDEN": "rejected",
+                "PENDING": "pending",
+            }
             counts = dict(h.get("review_counts", {"pending": 0, "approved": 0, "rejected": 0}))
 
-            if prev_status != review_status:
-                counts[prev_status.lower()] = max(0, counts.get(prev_status.lower(), 0) - 1)
-                counts[review_status.lower()] = counts.get(review_status.lower(), 0) + 1
+            prev_key = _count_key.get(prev_status, "pending")
+            new_key = _count_key.get(review_status, "approved")
+
+            if prev_key != new_key:
+                counts[prev_key] = max(0, counts.get(prev_key, 0) - 1)
+                counts[new_key] = counts.get(new_key, 0) + 1
 
             if counts.get("rejected", 0) > 0:
                 overall = "REJECTED"
@@ -188,11 +239,25 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
             else:
                 overall = "APPROVED"
 
-            transaction.update(zone_ref, {
+            # C9: update consensus.zone_status = REVIEWED inside run_zone_payload
+            run_zone_payload = z.get("run_zone_payload", {})
+            consensus = run_zone_payload.get("consensus", {})
+            consensus["zone_status"] = "REVIEWED"
+            run_zone_payload["consensus"] = consensus
+
+            # C8: if OVERRIDDEN and final_text provided, update selected_text
+            if review_status == "OVERRIDDEN" and final_text is not None:
+                consensus["selected_text"] = final_text
+
+            zone_updates = {
                 "review.review_status": review_status,
                 "review.review_comment": review_comment,
                 "review.reviewed_at": _fs.SERVER_TIMESTAMP,
-            })
+                # C9: persist updated payload with REVIEWED zone_status
+                "run_zone_payload": run_zone_payload,
+            }
+
+            transaction.update(zone_ref, zone_updates)
 
             transaction.update(header_ref, {
                 "review_counts": counts,
