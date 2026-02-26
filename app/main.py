@@ -192,7 +192,10 @@ async def auth_middleware(request: Request, call_next):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return RedirectResponse(url="/login", status_code=302)
 
-    if method == "POST" and not is_api:
+    # Skip CSRF check for /login: user has no session cookie yet, so no CSRF cookie exists.
+    # Reading the form body here would also consume it, causing FastAPI to see an empty body
+    # and raise "Field required" for the password parameter.
+    if method == "POST" and not is_api and path != "/login":
         content_type = (request.headers.get("content-type") or "").lower()
         is_form_post = (
             content_type.startswith("application/x-www-form-urlencoded")
