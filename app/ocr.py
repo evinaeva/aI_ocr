@@ -1,16 +1,47 @@
 """
 OCR module: Google Vision + Azure Computer Vision + OCR.Space.
 Supports running a specific engine or a set of engines.
+
+Batching extension (Phase google-batch-v2):
+  google_batch_annotate_images(image_bytes_list) — batch helper.
+  _GOOGLE_CACHE — thread-safe result cache populated by run_routes before
+  dispatch; consumed once by _ocr_google so dispatcher path is unchanged.
 """
+import math
 import os
 import logging
 import httpx
 import base64
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
 ALL_ENGINES = ["google", "azure", "ocrspace"]
+
+_GOOGLE_CACHE_LOCK = threading.Lock()
+# Maps id(image_bytes) -> OCRResult for pre-computed Google results.
+# Entries are consumed once (removed on first read) to avoid stale state.
+_GOOGLE_CACHE: dict = {}
+
+
+def _google_cache_put(image_bytes: bytes, result: "OCRResult") -> None:
+    """Store a pre-computed Google result keyed by object identity."""
+    with _GOOGLE_CACHE_LOCK:
+        _GOOGLE_CACHE[id(image_bytes)] = result
+
+
+def _google_cache_pop(image_bytes: bytes) -> "Optional[OCRResult]":
+    """Consume a cached Google result (remove on read). Returns None if absent."""
+    with _GOOGLE_CACHE_LOCK:
+        return _GOOGLE_CACHE.pop(id(image_bytes), None)
+
+
+def _google_cache_clear(keys: list) -> None:
+    """Remove any remaining cache entries for the given ids (cleanup)."""
+    with _GOOGLE_CACHE_LOCK:
+        for k in keys:
+            _GOOGLE_CACHE.pop(k, None)
 
 
 # ─────────────────────────── Startup validation ──────────────────────────────
@@ -65,8 +96,42 @@ def emit_startup_warnings() -> None:
 
 # ─────────────────────────── Google Vision ───────────────────────────────────
 
-def _ocr_google(image_bytes: bytes) -> Optional[tuple[str, float]]:
-    """Return (text, confidence) or None on failure."""
+def _parse_google_full_text(full_text_annotation):
+    """
+    Shared response-parsing logic for both single and batch Google calls.
+    Returns (text, avg_confidence).
+    """
+    confidences = []
+    for page in full_text_annotation.pages:
+        for block in page.blocks:
+            if block.confidence:
+                confidences.append(block.confidence)
+    avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
+    return (full_text_annotation.text.strip(), avg_conf)
+
+
+def _build_google_annotate_request(image_bytes: bytes):
+    """Build a single AnnotateImageRequest for DOCUMENT_TEXT_DETECTION."""
+    from google.cloud import vision  # type: ignore
+    return vision.AnnotateImageRequest(
+        image=vision.Image(content=image_bytes),
+        features=[vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)],
+    )
+
+
+def _ocr_google(image_bytes: bytes) -> Optional[tuple]:
+    """Return (text, confidence) or None on failure.
+
+    If a pre-computed result has been injected via _google_cache_put, consume
+    it and return immediately — no API call made.
+    """
+    # Check pre-computed cache first (set by run_routes batch path).
+    cached = _google_cache_pop(image_bytes)
+    if cached is not None:
+        if not cached.text and cached.confidence == 0.0:
+            return None
+        return (cached.text, cached.confidence)
+
     try:
         from google.cloud import vision  # type: ignore
         client = vision.ImageAnnotatorClient()
@@ -78,21 +143,95 @@ def _ocr_google(image_bytes: bytes) -> Optional[tuple[str, float]]:
         full = response.full_text_annotation
         if not full or not full.text:
             return None
-        confidences = []
-        for page in full.pages:
-            for block in page.blocks:
-                if block.confidence:
-                    confidences.append(block.confidence)
-        avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
-        return (full.text.strip(), avg_conf)
+        return _parse_google_full_text(full)
     except Exception as exc:
         logger.warning("Google Vision exception: %s", exc)
         return None
 
 
+def google_batch_annotate_images(image_bytes_list: list) -> list:
+    """
+    Batch Google Vision DOCUMENT_TEXT_DETECTION for up to 16 images per call.
+
+    - Chunks input into groups of 16.
+    - Preserves input order strictly.
+    - Never raises; failed elements return OCRResult(text='', confidence=0.0,
+      engine='google').
+    - Logs "google_batch_v2 size=N chunks=C" when size >= 2.
+    """
+    n = len(image_bytes_list)
+    if n == 0:
+        return []
+
+    chunk_size = 16
+    num_chunks = math.ceil(n / chunk_size)
+
+    if n >= 2:
+        logger.info("google_batch_v2 size=%d chunks=%d", n, num_chunks)
+
+    results = []
+
+    try:
+        from google.cloud import vision  # type: ignore
+        client = vision.ImageAnnotatorClient()
+    except Exception as exc:
+        logger.warning("google_batch_v2 client_init_failed: %s", exc)
+        return [OCRResult("", 0.0, "google") for _ in image_bytes_list]
+
+    for chunk_start in range(0, n, chunk_size):
+        chunk = image_bytes_list[chunk_start: chunk_start + chunk_size]
+        try:
+            from google.cloud import vision  # type: ignore
+        except Exception:
+            results.extend([OCRResult("", 0.0, "google")] * len(chunk))
+            continue
+        requests = [
+            vision.AnnotateImageRequest(
+                image=vision.Image(content=img),
+                features=[vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)],
+            )
+            for img in chunk
+        ]
+        try:
+            batch_response = client.batch_annotate_images(requests=requests)
+            responses = list(batch_response.responses)
+            # Pad if API returns fewer responses than requested
+            while len(responses) < len(chunk):
+                responses.append(None)
+            for i, resp in enumerate(responses):
+                idx = chunk_start + i
+                if resp is None:
+                    logger.warning(
+                        "google_batch_v2 element_failed index=%d error=missing_response", idx
+                    )
+                    results.append(OCRResult("", 0.0, "google"))
+                    continue
+                if resp.error.message:
+                    logger.warning(
+                        "google_batch_v2 element_failed index=%d error=%s",
+                        idx, resp.error.message,
+                    )
+                    results.append(OCRResult("", 0.0, "google"))
+                    continue
+                full = resp.full_text_annotation
+                if not full or not full.text:
+                    results.append(OCRResult("", 0.0, "google"))
+                    continue
+                text, conf = _parse_google_full_text(full)
+                results.append(OCRResult(text, conf, "google"))
+        except Exception as exc:
+            logger.warning(
+                "google_batch_v2 chunk_failed chunk_start=%d error=%s",
+                chunk_start, exc,
+            )
+            results.extend([OCRResult("", 0.0, "google")] * len(chunk))
+
+    return results
+
+
 # ─────────────────────────── Azure OCR ───────────────────────────────────────
 
-def _ocr_azure(image_bytes: bytes) -> Optional[tuple[str, float]]:
+def _ocr_azure(image_bytes: bytes) -> Optional[tuple]:
     """Return (text, confidence) or None on failure."""
     endpoint = os.getenv("AZURE_OCR_ENDPOINT", "").rstrip("/")
     key = os.getenv("AZURE_OCR_KEY", "")
@@ -128,7 +267,7 @@ def _ocr_azure(image_bytes: bytes) -> Optional[tuple[str, float]]:
 
 # ─────────────────────────── OCR.Space ───────────────────────────────────────
 
-def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple[str, float]]:
+def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple]:
     """
     OCR.Space Engine 3 — confidence is a fixed approximation
     (OCR.Space API does not return word-level confidence).
@@ -201,7 +340,7 @@ class OCRResult:
 
 def run_ocr(image_bytes: bytes, engine: str = None) -> OCRResult:
     """Run a single engine (or best-of-all if engine is None)."""
-    results: list[tuple[str, float, str]] = []
+    results = []
     engines = [engine] if engine and engine in _ENGINE_FNS else list(_ENGINE_FNS.keys())
     for eng_name in engines:
         r = _ENGINE_FNS[eng_name](image_bytes)
@@ -214,12 +353,12 @@ def run_ocr(image_bytes: bytes, engine: str = None) -> OCRResult:
     return OCRResult(text, conf, eng)
 
 
-def run_ocr_multi(image_bytes: bytes, engines: list[str]) -> dict[str, OCRResult]:
+def run_ocr_multi(image_bytes: bytes, engines: list) -> dict:
     """
     Run each engine in `engines`, return dict {engine_name: OCRResult}.
     Missing / failed engines are not included in the result dict.
     """
-    out: dict[str, OCRResult] = {}
+    out = {}
     for eng_name in engines:
         fn = _ENGINE_FNS.get(eng_name)
         if fn is None:

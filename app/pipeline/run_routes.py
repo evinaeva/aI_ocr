@@ -12,6 +12,12 @@ Phase 6 additions (additive):
 
 A2 fix: dispatch_zone_ocr is a sync function; called via asyncio.to_thread
   to avoid blocking the event loop.
+
+Google-batch-v2 (additive):
+  Before processing zones, all zones with Google engine are batched via
+  google_batch_annotate_images (up to 16 per call). Results are injected into
+  the per-image cache in app/ocr so _ocr_google consumes them without an
+  extra API call. Dispatcher, done++ and semaphore are completely unchanged.
 """
 from __future__ import annotations
 
@@ -31,6 +37,7 @@ from app.pipeline.consensus import resolve_consensus
 from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
 from app.pipeline.firestore_store import is_persistence_enabled
 from app.pipeline.persistence import persist_run
+from app.ocr import google_batch_annotate_images, _google_cache_put, _google_cache_clear
 
 run_router = APIRouter()
 
@@ -67,6 +74,58 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     return buf.getvalue()
 
 
+def _prefetch_google_batch(
+    image_bytes: bytes,
+    zones: list,
+    source_size: list,
+) -> dict:
+    """
+    Crop images for all zones that include 'google' in their engines.
+    Calls google_batch_annotate_images in chunks of 16.
+    Injects results into the OCR module cache via _google_cache_put.
+
+    Returns a dict {zone_index: zone_bytes} for zones that were batched,
+    so run_routes can pass the SAME bytes object to dispatch_zone_ocr
+    (object-identity match required for cache lookup).
+
+    Never raises.
+    """
+    # Collect (zone_index, zone_bytes) for Google zones only
+    google_jobs = []  # list of (zone_index, zone_bytes)
+    for i, zone in enumerate(zones):
+        if "google" not in zone.engines:
+            continue
+        try:
+            zb = _crop_zone(image_bytes, zone, source_size)
+        except Exception:
+            zb = image_bytes
+        google_jobs.append((i, zb))
+
+    if not google_jobs:
+        return {}
+
+    job_bytes = [zb for _, zb in google_jobs]
+    try:
+        batch_results = google_batch_annotate_images(job_bytes)
+    except Exception:
+        # If batch helper itself raises (shouldn't), return empty map
+        # so dispatcher falls back to per-call path.
+        return {}
+
+    # Pad results if shorter than input
+    from app.ocr import OCRResult
+    while len(batch_results) < len(google_jobs):
+        batch_results.append(OCRResult("", 0.0, "google"))
+
+    # Inject into cache keyed by object id of each zone_bytes
+    zone_bytes_map = {}
+    for (zone_idx, zb), result in zip(google_jobs, batch_results):
+        _google_cache_put(zb, result)
+        zone_bytes_map[zone_idx] = zb
+
+    return zone_bytes_map
+
+
 @run_router.post("/api/templates/{template_name}/run")
 async def run_template(
     template_name: str,
@@ -92,6 +151,7 @@ async def run_template(
     }
     """
     run_id = str(uuid.uuid4())
+    batched_zone_bytes: dict = {}
     try:
         tmpl = template_store.get_template(template_name)
         if tmpl is None:
@@ -104,9 +164,17 @@ async def run_template(
         log_event("run_start", run_id=run_id, template_name=template_name,
                   zone_count=len(tmpl.zones), lang=effective_lang or None)
 
+        # ── Google-batch-v2: pre-fetch all Google zones in one batch ──────────
+        # Results are injected into ocr._GOOGLE_CACHE so dispatch_zone_ocr
+        # calls _ocr_google which will hit the cache and skip real API calls.
+        # Dispatcher, done++, and semaphore are completely unmodified.
+        batched_zone_bytes = await asyncio.to_thread(
+            _prefetch_google_batch, image_bytes, tmpl.zones, tmpl.source_size
+        )
+
         zone_results = []
 
-        for zone in tmpl.zones:
+        for i, zone in enumerate(tmpl.zones):
             engines_configured = len(zone.engines) > 0
 
             if not engines_configured:
@@ -132,13 +200,19 @@ async def run_template(
                 })
                 continue
 
-            try:
-                zone_bytes = _crop_zone(image_bytes, zone, tmpl.source_size)
-            except Exception:
-                zone_bytes = image_bytes
+            # Use the same bytes object that was injected into the cache so
+            # object-identity lookup in _ocr_google succeeds.
+            if i in batched_zone_bytes:
+                zone_bytes = batched_zone_bytes[i]
+            else:
+                try:
+                    zone_bytes = _crop_zone(image_bytes, zone, tmpl.source_size)
+                except Exception:
+                    zone_bytes = image_bytes
 
             # A2: dispatch_zone_ocr is synchronous — run in thread pool to avoid
             # blocking the event loop under concurrent requests.
+            # For Google zones the cache hit in _ocr_google skips the API call.
             engine_results = await asyncio.to_thread(dispatch_zone_ocr, zone, zone_bytes)
 
             consensus = resolve_consensus(
@@ -215,3 +289,7 @@ async def run_template(
         log_event("run_end", run_id=run_id, status="error",
                   template_name=template_name)
         return JSONResponse({"error": "internal_error"}, status_code=500)
+    finally:
+        # Clean up any unconsumed cache entries (e.g. zones skipped due to error)
+        if batched_zone_bytes:
+            _google_cache_clear([id(zb) for zb in batched_zone_bytes.values()])
