@@ -37,7 +37,11 @@ from app.pipeline.consensus import resolve_consensus
 from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
 from app.pipeline.firestore_store import is_persistence_enabled
 from app.pipeline.persistence import persist_run
-from app.ocr import google_batch_annotate_images, _google_cache_put, _google_cache_clear
+from app.ocr import (
+    google_batch_annotate_images,
+    _google_cache_put,
+    _google_cache_clear,
+)
 
 run_router = APIRouter()
 
@@ -90,8 +94,8 @@ def _prefetch_google_batch(
 
     Never raises.
     """
-    # Collect (zone_index, zone_bytes) for Google zones only
-    google_jobs = []  # list of (zone_index, zone_bytes)
+    google_jobs = []
+
     for i, zone in enumerate(zones):
         if "google" not in zone.engines:
             continue
@@ -105,19 +109,17 @@ def _prefetch_google_batch(
         return {}
 
     job_bytes = [zb for _, zb in google_jobs]
+
     try:
         batch_results = google_batch_annotate_images(job_bytes)
     except Exception:
-        # If batch helper itself raises (shouldn't), return empty map
-        # so dispatcher falls back to per-call path.
         return {}
 
-    # Pad results if shorter than input
     from app.ocr import OCRResult
+
     while len(batch_results) < len(google_jobs):
         batch_results.append(OCRResult("", 0.0, "google"))
 
-    # Inject into cache keyed by object id of each zone_bytes
     zone_bytes_map = {}
     for (zone_idx, zb), result in zip(google_jobs, batch_results):
         _google_cache_put(zb, result)
@@ -139,37 +141,32 @@ async def run_template(
     Phase 6 (additive): persists run to Firestore synchronously; adds
       persisted / persistence_error / persistence_error_type to response.
       These three keys are ALWAYS present, even when persistence is disabled.
-
-    Returns JSON:
-    {
-      "run_id": "...",
-      "template_name": "...",
-      "persisted": true|false,
-      "persistence_error": false|true,
-      "persistence_error_type": null|"firestore_write_failed",
-      "zones": [ ... ]
-    }
     """
     run_id = str(uuid.uuid4())
     batched_zone_bytes: dict = {}
+
     try:
         tmpl = template_store.get_template(template_name)
         if tmpl is None:
             raise HTTPException(status_code=404, detail="Template not found")
 
         image_bytes = await image.read()
-
         effective_lang = lang.strip() if lang else ""
 
-        log_event("run_start", run_id=run_id, template_name=template_name,
-                  zone_count=len(tmpl.zones), lang=effective_lang or None)
+        log_event(
+            "run_start",
+            run_id=run_id,
+            template_name=template_name,
+            zone_count=len(tmpl.zones),
+            lang=effective_lang or None,
+        )
 
-        # ── Google-batch-v2: pre-fetch all Google zones in one batch ──────────
-        # Results are injected into ocr._GOOGLE_CACHE so dispatch_zone_ocr
-        # calls _ocr_google which will hit the cache and skip real API calls.
-        # Dispatcher, done++, and semaphore are completely unmodified.
+        # Google-batch-v2 prefetch
         batched_zone_bytes = await asyncio.to_thread(
-            _prefetch_google_batch, image_bytes, tmpl.zones, tmpl.source_size
+            _prefetch_google_batch,
+            image_bytes,
+            tmpl.zones,
+            tmpl.source_size,
         )
 
         zone_results = []
@@ -189,31 +186,39 @@ async def run_template(
                     ocr_text="",
                     run_id=run_id,
                 )
-                log_event("zone_skip", run_id=run_id, zone_name=zone.name,
-                          reason="no_engines_configured")
-                zone_results.append({
-                    "zone_name": zone.name,
-                    "engines_used": zone.engines,
-                    "engine_results": [],
-                    "consensus": consensus,
-                    "validation": validation_block,
-                })
+
+                log_event(
+                    "zone_skip",
+                    run_id=run_id,
+                    zone_name=zone.name,
+                    reason="no_engines_configured",
+                )
+
+                zone_results.append(
+                    {
+                        "zone_name": zone.name,
+                        "engines_used": zone.engines,
+                        "engine_results": [],
+                        "consensus": consensus,
+                        "validation": validation_block,
+                    }
+                )
                 continue
 
-            # Use the same bytes object that was injected into the cache so
-            # object-identity lookup in _ocr_google succeeds.
+            # Use same bytes object if it was batched
             if i in batched_zone_bytes:
                 zone_bytes = batched_zone_bytes[i]
             else:
                 try:
-                    zone_bytes = _crop_zone(image_bytes, zone, tmpl.source_size)
+                    zone_bytes = _crop_zone(
+                        image_bytes, zone, tmpl.source_size
+                    )
                 except Exception:
                     zone_bytes = image_bytes
 
-            # A2: dispatch_zone_ocr is synchronous — run in thread pool to avoid
-            # blocking the event loop under concurrent requests.
-            # For Google zones the cache hit in _ocr_google skips the API call.
-            engine_results = await asyncio.to_thread(dispatch_zone_ocr, zone, zone_bytes)
+            engine_results = await asyncio.to_thread(
+                dispatch_zone_ocr, zone, zone_bytes
+            )
 
             consensus = resolve_consensus(
                 engine_results=engine_results,
@@ -221,6 +226,7 @@ async def run_template(
             )
 
             selected_text = consensus.get("selected_text") or ""
+
             validation_block, sim_raw = build_validation_result(
                 lang=effective_lang,
                 zone_name=zone.name,
@@ -247,16 +253,23 @@ async def run_template(
                 engines_count=len(engine_results),
             )
 
-            zone_results.append({
-                "zone_name": zone.name,
-                "engines_used": zone.engines,
-                "engine_results": [r.to_dict() for r in engine_results],
-                "consensus": consensus,
-                "validation": validation_block,
-            })
+            zone_results.append(
+                {
+                    "zone_name": zone.name,
+                    "engines_used": zone.engines,
+                    "engine_results": [r.to_dict() for r in engine_results],
+                    "consensus": consensus,
+                    "validation": validation_block,
+                }
+            )
 
-        log_event("run_end", run_id=run_id, status="ok",
-                  template_name=template_name, zones_processed=len(zone_results))
+        log_event(
+            "run_end",
+            run_id=run_id,
+            status="ok",
+            template_name=template_name,
+            zones_processed=len(zone_results),
+        )
 
         response_payload = {
             "run_id": run_id,
@@ -264,7 +277,6 @@ async def run_template(
             "zones": zone_results,
         }
 
-        # ── Phase 6: synchronous persistence (§3) ────────────────────────────
         if is_persistence_enabled():
             persistence_flags = persist_run(
                 run_id=run_id,
@@ -274,22 +286,29 @@ async def run_template(
             )
             response_payload.update(persistence_flags)
         else:
-            # Persistence disabled — always include deterministic flags
-            response_payload.update({
-                "persisted": False,
-                "persistence_error": False,
-                "persistence_error_type": None,
-            })
+            response_payload.update(
+                {
+                    "persisted": False,
+                    "persistence_error": False,
+                    "persistence_error_type": None,
+                }
+            )
 
         return JSONResponse(response_payload)
 
     except HTTPException:
         raise
     except Exception:
-        log_event("run_end", run_id=run_id, status="error",
-                  template_name=template_name)
+        log_event(
+            "run_end",
+            run_id=run_id,
+            status="error",
+            template_name=template_name,
+        )
         return JSONResponse({"error": "internal_error"}, status_code=500)
+
     finally:
-        # Clean up any unconsumed cache entries (e.g. zones skipped due to error)
         if batched_zone_bytes:
-            _google_cache_clear([id(zb) for zb in batched_zone_bytes.values()])
+            _google_cache_clear(
+                [id(zb) for zb in batched_zone_bytes.values()]
+            )
