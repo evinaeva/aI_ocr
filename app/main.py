@@ -2,6 +2,9 @@
 OCR Localization Checker — FastAPI main application.
 """
 import asyncio
+import base64
+import hashlib
+import hmac
 import io
 import json
 import logging
@@ -15,7 +18,7 @@ from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -39,6 +42,17 @@ BASE_DIR = Path(__file__).parent
 TEMPLATES_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 DB_PATH = os.getenv("DB_PATH", "/tmp/sessions.db")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "")
+
+if not APP_PASSWORD:
+    raise RuntimeError("APP_PASSWORD is required")
+if not SESSION_SECRET:
+    raise RuntimeError("SESSION_SECRET is required")
+
+SESSION_COOKIE_NAME = "aiocr_session"
+CSRF_COOKIE_NAME = "aiocr_csrf"
+SESSION_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def get_db() -> sqlite3.Connection:
@@ -118,6 +132,72 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 _sse_queues: Dict[str, asyncio.Queue] = {}
 
 
+def _b64url_encode(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("utf-8")
+
+
+def _b64url_decode(data: str) -> bytes:
+    padding = "=" * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + padding)
+
+
+def _sign_payload(payload_b64: str) -> str:
+    sig = hmac.new(SESSION_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    return _b64url_encode(sig)
+
+
+def _make_session_cookie() -> str:
+    payload = {"auth": True, "iat": int(time.time())}
+    payload_b64 = _b64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    return f"{payload_b64}.{_sign_payload(payload_b64)}"
+
+
+def _is_authenticated(request: Request) -> bool:
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    if not token or "." not in token:
+        return False
+    payload_b64, sig = token.split(".", 1)
+    expected_sig = _sign_payload(payload_b64)
+    if not hmac.compare_digest(sig, expected_sig):
+        return False
+    try:
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        return False
+    if payload.get("auth") is not True:
+        return False
+    iat = payload.get("iat")
+    if not isinstance(iat, int):
+        return False
+    return int(time.time()) - iat <= SESSION_TTL_SECONDS
+
+
+def _new_csrf_token() -> str:
+    return _b64url_encode(os.urandom(32))
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    method = request.method.upper()
+    is_api = path.startswith("/api/")
+    is_public = path.startswith("/static/") or path == "/login"
+
+    if not is_public and not _is_authenticated(request):
+        if is_api:
+            return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return RedirectResponse(url="/login", status_code=302)
+
+    if method == "POST" and not is_api:
+        csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
+        form = await request.form()
+        csrf_form = str(form.get("csrf_token", ""))
+        if not csrf_cookie or not hmac.compare_digest(csrf_cookie, csrf_form):
+            return JSONResponse({"detail": "CSRF failed"}, status_code=403)
+
+    return await call_next(request)
+
+
 def _push_event(session_id: str, event: dict):
     q = _sse_queues.get(session_id)
     if q:
@@ -130,6 +210,38 @@ def _push_event(session_id: str, event: dict):
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    csrf_token = _new_csrf_token()
+    response = templates.TemplateResponse("login.html", {"request": request, "csrf_token": csrf_token})
+    response.set_cookie(CSRF_COOKIE_NAME, csrf_token, secure=True, httponly=False, samesite="lax", path="/")
+    return response
+
+
+@app.post("/login")
+async def login(password: str = Form(...)):
+    if not hmac.compare_digest(password, APP_PASSWORD):
+        return RedirectResponse(url="/login", status_code=302)
+    response = RedirectResponse(url="/", status_code=302)
+    response.set_cookie(
+        SESSION_COOKIE_NAME,
+        _make_session_cookie(),
+        max_age=SESSION_TTL_SECONDS,
+        secure=True,
+        httponly=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
+@app.post("/logout")
+async def logout():
+    response = RedirectResponse(url="/login", status_code=302)
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return response
 
 
 @app.get("/about", response_class=HTMLResponse)
@@ -222,7 +334,7 @@ async def get_image(session_id: str, filename: str):
     return Response(content=bytes(row["data"]), media_type=media_type)
 
 
-@app.get("/progress/{session_id}")
+@app.get("/api/progress/{session_id}")
 async def progress(session_id: str):
     q: asyncio.Queue = asyncio.Queue(maxsize=200)
     _sse_queues[session_id] = q
@@ -247,7 +359,7 @@ async def progress(session_id: str):
 _VALID_ENGINES = set(ALL_ENGINES)
 
 
-@app.post("/upload")
+@app.post("/api/upload")
 async def upload(
     zip_file: UploadFile = File(...),
     engines: Optional[str] = Form("google"),  # comma-separated list
@@ -465,7 +577,7 @@ async def _process_session(
         conn.close()
 
 
-@app.get("/results/{session_id}")
+@app.get("/api/results/{session_id}")
 async def get_results(
     session_id: str,
     page: int = 1,
@@ -541,7 +653,7 @@ async def get_results(
     })
 
 
-@app.post("/decide/{result_id}")
+@app.post("/api/decide/{result_id}")
 async def decide(result_id: int, decision: str = Form(...)):
     if decision not in ("ok", "error"):
         return JSONResponse({"error": "invalid decision"}, status_code=400)
@@ -552,7 +664,7 @@ async def decide(result_id: int, decision: str = Form(...)):
     return JSONResponse({"ok": True})
 
 
-@app.post("/debug/ocr")
+@app.post("/api/debug/ocr")
 async def debug_ocr(zip_file: UploadFile = File(...)):
     zip_bytes = await zip_file.read()
     contents = process_zip(zip_bytes)
@@ -602,7 +714,7 @@ async def debug_ocr(zip_file: UploadFile = File(...)):
     return JSONResponse(results)
 
 
-@app.get("/download/{session_id}")
+@app.get("/api/download/{session_id}")
 async def download_errors(session_id: str):
     conn = get_db()
     rows = conn.execute(
