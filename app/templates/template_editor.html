@@ -7,70 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
-<style>
-  body { margin: 0; font-family: 'Plus Jakarta Sans', sans-serif; background: #f3f4f6; }
-  .header { background: #fff; border-bottom: 1px solid #e5e7eb; padding: 0.75rem 1.5rem; display: flex; align-items: center; gap: 0.6rem; }
-  .header h1 { font-size: 1.05rem; margin: 0; color: #111827; }
-  .header-icon { font-size: 1.3rem; }
-  .back-link { color: #6b7280; text-decoration: none; font-size: 0.88rem; margin-left: auto; }
-  .back-link:hover { color: #374151; }
 
-  /* Top bar */
-  .topbar { background: #fff; border-bottom: 1px solid #e5e7eb; padding: 0.65rem 1.25rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
-  .topbar label { font-size: 0.82rem; color: #6b7280; white-space: nowrap; }
-  .topbar input[type=file] { font-size: 0.82rem; }
-  .topbar select, .topbar input[type=text] { font-size: 0.88rem; padding: 0.3rem 0.6rem; border: 1px solid #d1d5db; border-radius: 5px; height: 32px; }
-  .topbar input[type=text] { width: 200px; }
-  .topbar select { min-width: 180px; }
-  .btn { display: inline-flex; align-items: center; padding: 0.3rem 0.9rem; border-radius: 5px; border: none; cursor: pointer; font-size: 0.85rem; font-weight: 600; transition: background 0.15s; height: 32px; }
-  .btn-primary { background: #2563eb; color: #fff; }
-  .btn-primary:hover { background: #1d4ed8; }
-  .btn-secondary { background: #e5e7eb; color: #374151; }
-  .btn-secondary:hover { background: #d1d5db; }
-  .btn-danger { background: #dc2626; color: #fff; }
-  .btn-danger:hover { background: #b91c1c; }
-  .btn-xs { padding: 0.15rem 0.55rem; font-size: 0.78rem; height: 24px; border-radius: 4px; background: #e5e7eb; color: #374151; border: none; cursor: pointer; font-weight: 500; }
-  .btn-xs:hover { background: #d1d5db; }
-
-  /* Layout */
-  .editor-layout { display: flex; height: calc(100vh - 110px); overflow: hidden; }
-
-  /* Canvas area */
-  .canvas-area { flex: 1; overflow: auto; padding: 1rem; background: #e5e7eb; display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem; }
-  #editor-canvas { cursor: crosshair; background: #fff; box-shadow: 0 1px 6px rgba(0,0,0,0.15); display: block; }
-  .canvas-msg { font-size: 0.83rem; padding: 0.35rem 0.75rem; border-radius: 5px; }
-  .canvas-msg.ok { background: #d1fae5; color: #065f46; }
-  .canvas-msg.warn { background: #fef9c3; color: #78350f; }
-
-  /* Sidebar */
-  .sidebar { width: 280px; min-width: 240px; background: #fff; border-left: 1px solid #e5e7eb; display: flex; flex-direction: column; overflow: hidden; }
-  .sidebar-section { padding: 0.85rem 1rem; border-bottom: 1px solid #f3f4f6; }
-  .sidebar-section h4 { margin: 0 0 0.6rem 0; font-size: 0.85rem; color: #374151; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
-  .zones-list { overflow-y: auto; flex: 0 0 auto; max-height: 200px; }
-  .zone-row { display: flex; align-items: center; justify-content: space-between; padding: 0.4rem 1rem; border-bottom: 1px solid #f9fafb; font-size: 0.83rem; cursor: pointer; }
-  .zone-row:hover { background: #f9fafb; }
-  .zone-row.selected { background: #eff6ff; }
-  .zone-info { display: flex; flex-direction: column; gap: 1px; }
-  .zone-name { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: #1d4ed8; }
-  .zone-type { font-size: 0.75rem; color: #9ca3af; }
-  .zones-empty { padding: 0.75rem 1rem; font-size: 0.82rem; color: #9ca3af; }
-
-  /* Sidebar form */
-  #sidebar-form { padding: 0.85rem 1rem; border-top: 1px solid #f3f4f6; overflow-y: auto; flex: 1; }
-  #sidebar-form h4 { margin: 0 0 0.7rem; font-size: 0.85rem; color: #374151; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
-  .form-row { margin-bottom: 0.65rem; }
-  .form-row label { display: block; font-size: 0.78rem; color: #6b7280; margin-bottom: 0.2rem; font-weight: 500; }
-  .form-row input[type=text], .form-row select, .form-row textarea { width: 100%; box-sizing: border-box; padding: 0.3rem 0.5rem; border: 1px solid #d1d5db; border-radius: 4px; font-size: 0.85rem; }
-  .form-row textarea { height: 56px; resize: vertical; font-family: inherit; }
-  .form-row input[readonly] { background: #f9fafb; color: #6b7280; font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; }
-  .engines-row { display: flex; gap: 0.6rem; flex-wrap: wrap; }
-  .engines-row label { display: flex; align-items: center; gap: 0.25rem; font-size: 0.82rem; color: #374151; font-weight: 400; }
-
-  /* Save errors */
-  #save-errors { display: none; background: #fee2e2; border: 1px solid #fca5a5; border-radius: 6px; padding: 0.6rem 1rem; margin: 0.5rem 1.25rem; font-size: 0.85rem; color: #991b1b; }
-  #save-errors ul { margin: 0; padding-left: 1.2rem; }
-  #save-errors li { margin-bottom: 0.15rem; }
-</style>
 </head>
 <body>
 <header class="header">
@@ -103,7 +40,7 @@
   <!-- Canvas area -->
   <div class="canvas-area">
     <canvas id="editor-canvas" width="600" height="400"></canvas>
-    <div id="canvas-msg" class="canvas-msg" style="display:none;"></div>
+    <div id="canvas-msg" class="canvas-msg is-hidden"></div>
   </div>
 
   <!-- Right sidebar -->
@@ -114,7 +51,7 @@
     </div>
 
     <!-- Zone edit form -->
-    <div id="sidebar-form" style="display:none;">
+    <div id="sidebar-form" class="is-hidden">
       <h4>Edit Zone</h4>
       <div class="form-row">
         <label>Name</label>
@@ -143,7 +80,7 @@
         <label>BBox (source px)</label>
         <input type="text" id="sf-bbox" readonly>
       </div>
-      <button class="btn btn-danger" id="btn-delete-zone" style="width:100%;margin-top:0.5rem;">Delete zone</button>
+      <button class="btn btn-danger btn-full" id="btn-delete-zone">Delete zone</button>
     </div>
   </div>
 

@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}OCR Localization Checker{% endblock %}</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  {% block extra_head %}{% endblock %}
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  {% block page %}
+  <div class="app {% block app_class %}{% endblock %}">
+    {% block header %}
+    <header class="header">
+      <div class="header-inner">
+        <span class="header-icon">🔍</span>
+        <h1>OCR Localization Checker</h1>
+        {% block header_actions %}{% endblock %}
+      </div>
+    </header>
+    {% endblock %}
+
+    {% block content %}{% endblock %}
+  </div>
+  {% endblock %}
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>
