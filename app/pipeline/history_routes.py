@@ -4,6 +4,9 @@ Phase 6: History + Review API endpoints.
 GET  /api/templates/{template_name}/history
 GET  /api/runs/{run_id}
 POST /api/runs/{run_id}/zones/{zone_index}/review
+
+Variant A fix: routers are always registered; endpoints return 503 when
+PERSISTENCE_ENABLED is False, never 404.
 """
 from __future__ import annotations
 
@@ -11,10 +14,19 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from app.logging_utils import log_event
-from app.pipeline.firestore_store import get_db, firestore_timestamp_to_iso
+from app.pipeline.firestore_store import (
+    get_db,
+    firestore_timestamp_to_iso,
+    is_persistence_enabled,
+)
 from app.pipeline.persistence import COLLECTION_RUNS, COLLECTION_ZONES
 
 history_router = APIRouter()
+
+_DISABLED = JSONResponse(
+    {"detail": "Persistence disabled"},
+    status_code=503,
+)
 
 
 @history_router.get("/api/templates/{template_name}/history")
@@ -22,7 +34,11 @@ async def get_history(template_name: str):
     """
     Returns up to 50 runs for a template, ordered by created_at DESC.
     Returns empty runs list (not 404) when no runs exist (§6.1).
+    Returns 503 when persistence is disabled.
     """
+    if not is_persistence_enabled():
+        return JSONResponse({"detail": "Persistence disabled"}, status_code=503)
+
     try:
         db = get_db()
         query = (
@@ -54,7 +70,11 @@ async def get_run(run_id: str):
     """
     Returns full run with all zones ordered by zone_index ASC.
     404 if header doc not found (§6.2).
+    503 when persistence is disabled.
     """
+    if not is_persistence_enabled():
+        return JSONResponse({"detail": "Persistence disabled"}, status_code=503)
+
     try:
         db = get_db()
 
@@ -104,11 +124,14 @@ async def get_run(run_id: str):
 @history_router.post("/api/runs/{run_id}/zones/{zone_index}/review")
 async def update_zone_review(run_id: str, zone_index: int, body: dict):
     """
-    Update zone review status. Uses Firestore transaction to keep header
-    review_counts consistent (§7.2).
+    Update zone review status.
+    503 when persistence is disabled.
 
     Body: { "review_status": "APPROVED"|"REJECTED", "review_comment": "..." }
     """
+    if not is_persistence_enabled():
+        return JSONResponse({"detail": "Persistence disabled"}, status_code=503)
+
     review_status = body.get("review_status")
     if review_status not in ("APPROVED", "REJECTED"):
         return JSONResponse(
@@ -119,7 +142,7 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
     review_comment = body.get("review_comment")
     if review_comment is not None and len(str(review_comment)) > 1000:
         return JSONResponse(
-            {"error": "comment_too_long", "detail": "review_comment must be ≤ 1000 chars"},
+            {"error": "comment_too_long", "detail": "review_comment must be \u2264 1000 chars"},
             status_code=400,
         )
 

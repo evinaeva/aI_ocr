@@ -25,7 +25,7 @@ from app.pipeline.models import ZoneDef
 from app.pipeline.ocr_dispatcher import dispatch_zone_ocr
 from app.pipeline.consensus import resolve_consensus
 from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
-from app.pipeline.firestore_store import FIRESTORE_AVAILABLE
+from app.pipeline.firestore_store import is_persistence_enabled
 from app.pipeline.persistence import persist_run
 
 run_router = APIRouter()
@@ -35,8 +35,6 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     """
     Crop image to zone bbox, scaling bbox from template source_size
     to actual image pixel dimensions. Returns PNG bytes.
-
-    No OCR text is accessed or logged here.
     """
     img = Image.open(io.BytesIO(image_bytes))
     img_w, img_h = img.size
@@ -51,7 +49,6 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     px2 = int(x2 * scale_x)
     py2 = int(y2 * scale_y)
 
-    # Clamp to image bounds
     px1 = max(0, min(px1, img_w))
     py1 = max(0, min(py1, img_h))
     px2 = max(0, min(px2, img_w))
@@ -61,7 +58,6 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     buf = io.BytesIO()
     cropped.save(buf, format="PNG")
     buf.seek(0)
-    # Release image objects explicitly
     cropped.close()
     img.close()
     return buf.getvalue()
@@ -79,6 +75,7 @@ async def run_template(
     Phase 5 (additive): adds a `validation` block to every zone in the response.
     Phase 6 (additive): persists run to Firestore synchronously; adds
       persisted / persistence_error / persistence_error_type to response.
+      These three keys are ALWAYS present, even when persistence is disabled.
 
     Returns JSON:
     {
@@ -89,9 +86,6 @@ async def run_template(
       "persistence_error_type": null|"firestore_write_failed",
       "zones": [ ... ]
     }
-
-    Logs: only run_id, template_name, zone_name, engine counts, rule_used,
-          zone_status. Never logs OCR text.
     """
     run_id = str(uuid.uuid4())
     try:
@@ -101,10 +95,8 @@ async def run_template(
 
         image_bytes = await image.read()
 
-        # Normalise lang: treat blank/whitespace-only as missing
         effective_lang = lang.strip() if lang else ""
 
-        # Log metadata only — no OCR text, no image content
         log_event("run_start", run_id=run_id, template_name=template_name,
                   zone_count=len(tmpl.zones), lang=effective_lang or None)
 
@@ -118,7 +110,6 @@ async def run_template(
                     engine_results=[],
                     engines_configured=False,
                 )
-                # Phase 5: validation block (skip — no OCR text available)
                 validation_block, _ = build_validation_result(
                     lang=effective_lang,
                     zone_name=zone.name,
@@ -137,22 +128,18 @@ async def run_template(
                 })
                 continue
 
-            # Crop zone from image; fall back to full image on error
             try:
                 zone_bytes = _crop_zone(image_bytes, zone, tmpl.source_size)
             except Exception:
                 zone_bytes = image_bytes
 
-            # Dispatch per-engine OCR for this zone
             engine_results = dispatch_zone_ocr(zone, zone_bytes)
 
-            # Resolve deterministic consensus
             consensus = resolve_consensus(
                 engine_results=engine_results,
                 engines_configured=True,
             )
 
-            # Phase 5: compute validation + apply status downgrade
             selected_text = consensus.get("selected_text") or ""
             validation_block, sim_raw = build_validation_result(
                 lang=effective_lang,
@@ -162,7 +149,6 @@ async def run_template(
                 run_id=run_id,
             )
 
-            # Downgrade zone_status only if it was OK and similarity < threshold
             if (
                 sim_raw is not None
                 and sim_raw < SIMILARITY_THRESHOLD
@@ -171,7 +157,6 @@ async def run_template(
                 consensus["zone_status"] = "MANUAL"
                 consensus["reason"] = "low_similarity"
 
-            # Log metadata only — rule_used and zone_status, no OCR text
             log_event(
                 "zone_result",
                 run_id=run_id,
@@ -200,7 +185,7 @@ async def run_template(
         }
 
         # ── Phase 6: synchronous persistence (§3) ────────────────────────────
-        if FIRESTORE_AVAILABLE:
+        if is_persistence_enabled():
             persistence_flags = persist_run(
                 run_id=run_id,
                 template_name=template_name,
@@ -208,6 +193,13 @@ async def run_template(
                 zones=zone_results,
             )
             response_payload.update(persistence_flags)
+        else:
+            # Persistence disabled — always include deterministic flags
+            response_payload.update({
+                "persisted": False,
+                "persistence_error": False,
+                "persistence_error_type": None,
+            })
 
         return JSONResponse(response_payload)
 

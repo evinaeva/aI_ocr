@@ -29,9 +29,7 @@ from .pipeline.template_routes import router as template_router
 from .pipeline.template_editor_routes import editor_router
 from .pipeline.preview_routes import preview_router
 from .pipeline.run_routes import run_router
-from .pipeline.firestore_store import FIRESTORE_AVAILABLE
-if FIRESTORE_AVAILABLE:
-    from .pipeline.history_routes import history_router
+from .pipeline.history_routes import history_router  # always imported — see Phase 6 fix
 from .pipeline import template_store
 
 logging.basicConfig(level=logging.INFO)
@@ -114,8 +112,7 @@ app.include_router(template_router)
 app.include_router(editor_router)
 app.include_router(preview_router)
 app.include_router(run_router)
-if FIRESTORE_AVAILABLE:
-    app.include_router(history_router)
+app.include_router(history_router)  # unconditional — endpoints return 503 when persistence disabled
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _sse_queues: Dict[str, asyncio.Queue] = {}
@@ -257,7 +254,6 @@ async def upload(
     section_number: Optional[int] = Form(None),
     section_name: Optional[str] = Form(None),
 ):
-    # Parse engines list
     selected = [e.strip() for e in (engines or "google").split(",") if e.strip() in _VALID_ENGINES]
     if not selected:
         selected = ["google"]
@@ -295,7 +291,6 @@ async def _process_session(
 
     locked_section_number: Optional[int] = hint_number
 
-    # Derive archive name from session_id for logging (no filename available here)
     archive_label = f"session:{session_id}"
 
     try:
@@ -344,12 +339,10 @@ async def _process_session(
                 "step": "ocr", "message": f"OCR {lang} [{', '.join(engines)}]..."
             })
 
-            # Run all selected engines
             ocr_results = await asyncio.get_event_loop().run_in_executor(
                 None, run_ocr_multi, image_bytes, engines
             )
 
-            # Pick best (highest confidence) for section matching
             best_engine = None
             best_text   = ""
             best_conf   = -1.0
@@ -359,7 +352,6 @@ async def _process_session(
                     best_text   = res.text
                     best_engine = eng
 
-            # Build per-engine display dict
             ocr_results_display = {
                 eng: clean_for_display(res.text)
                 for eng, res in ocr_results.items()
@@ -420,7 +412,6 @@ async def _process_session(
             else:
                 manual_count += 1
 
-            # Store per-engine OCR texts + confidences as JSON
             ocr_json = json.dumps({
                 eng: {
                     "text": ocr_results_display.get(eng, ""),
@@ -526,7 +517,6 @@ async def get_results(
             "best_engine": r["best_engine"],
         })
 
-    # Retrieve engines list from session
     try:
         engines_str = session["engines"] or "google"
         engines_list = [e for e in engines_str.split(",") if e]
