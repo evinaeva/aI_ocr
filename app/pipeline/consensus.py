@@ -11,6 +11,12 @@ Priority order for zone_status:
   3. no_consensus   (rule_used == no_confidence_fallback)
   4. low_confidence (confidence < 0.70)
   5. OK
+
+C7: rule_used values:
+  majority_2_of_3   — 3 engines configured, 2+ matched
+  match_2           — 2 engines configured, both matched
+  best_confidence   — no majority, pick by confidence
+  no_confidence_fallback — no match and no confidence
 """
 from __future__ import annotations
 
@@ -120,6 +126,9 @@ def resolve_consensus(
     # ── Sort alphabetically for determinism in all subsequent steps ───────────
     valid_sorted = sorted(valid, key=lambda r: r.engine)
 
+    # Count total engines that were configured for this zone (from engine_results)
+    total_configured = len(engine_results)
+
     # ── Step 1: Majority ──────────────────────────────────────────────────────
     # Group by normalized text
     groups: dict[str, List[ZoneEngineResult]] = {}
@@ -140,9 +149,15 @@ def resolve_consensus(
         majority_groups.sort(key=lambda x: x[0])   # deterministic on group text
         _, winning_group = majority_groups[0]
 
+        # C7: use correct rule_used based on engines_configured count
+        if total_configured >= 3:
+            rule = "majority_2_of_3"
+        else:
+            rule = "match_2"
+
         # Within winning group: pick by (1) highest valid confidence, (2) lex engine
         winner = _pick_from_group(winning_group)
-        return _make_result(winner, "majority")
+        return _make_result(winner, rule)
 
     # ── Step 2: Best confidence ───────────────────────────────────────────────
     with_conf = [
