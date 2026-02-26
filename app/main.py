@@ -169,7 +169,9 @@ def _is_authenticated(request: Request) -> bool:
     iat = payload.get("iat")
     if not isinstance(iat, int):
         return False
-    return int(time.time()) - iat <= SESSION_TTL_SECONDS
+    now = int(time.time())
+    delta = now - iat
+    return 0 <= delta <= SESSION_TTL_SECONDS
 
 
 def _new_csrf_token() -> str:
@@ -189,11 +191,17 @@ async def auth_middleware(request: Request, call_next):
         return RedirectResponse(url="/login", status_code=302)
 
     if method == "POST" and not is_api:
-        csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
-        form = await request.form()
-        csrf_form = str(form.get("csrf_token", ""))
-        if not csrf_cookie or not hmac.compare_digest(csrf_cookie, csrf_form):
-            return JSONResponse({"detail": "CSRF failed"}, status_code=403)
+        content_type = (request.headers.get("content-type") or "").lower()
+        is_form_post = (
+            content_type.startswith("application/x-www-form-urlencoded")
+            or content_type.startswith("multipart/form-data")
+        )
+        if is_form_post:
+            csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
+            form = await request.form()
+            csrf_form = str(form.get("csrf_token", ""))
+            if not csrf_cookie or not hmac.compare_digest(csrf_cookie, csrf_form):
+                return JSONResponse({"detail": "CSRF failed"}, status_code=403)
 
     return await call_next(request)
 
@@ -238,9 +246,10 @@ async def login(password: str = Form(...)):
 
 
 @app.post("/logout")
-async def logout():
+async def logout(csrf_token: str = Form(...)):
     response = RedirectResponse(url="/login", status_code=302)
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
     return response
 
 
