@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from google.api_core.exceptions import FailedPrecondition  # type: ignore
+
 from app.logging_utils import log_event
 from app.pipeline.firestore_store import FIRESTORE_AVAILABLE, get_db
 
@@ -112,9 +114,28 @@ def persist_run(
             "persistence_error_type": None,
         }
 
-    except Exception:  # noqa: BLE001
-        log_event("persistence_error", run_id=run_id,
-                  error_type="firestore_write_failed")
+    except FailedPrecondition as exc:
+        # Missing Firestore index — log with full diagnostic
+        log_event(
+            "persistence_error",
+            run_id=run_id,
+            error_type="firestore_index_missing",
+            exc_type=type(exc).__name__,
+            message=str(exc),
+        )
+        return {
+            "persisted": False,
+            "persistence_error": True,
+            "persistence_error_type": "firestore_write_failed",
+        }
+    except Exception as exc:  # noqa: BLE001
+        log_event(
+            "persistence_error",
+            run_id=run_id,
+            error_type="firestore_write_failed",
+            exc_type=type(exc).__name__,
+            message=str(exc),
+        )
         return {
             "persisted": False,
             "persistence_error": True,
