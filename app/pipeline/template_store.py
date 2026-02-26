@@ -139,10 +139,7 @@ def _auto_import_to_firestore(template: TemplateDef) -> None:
 
 def list_templates() -> List[str]:
     if is_persistence_enabled():
-        names = _fs_list()
-        if names:
-            return names
-        # Fallback to file list (Firestore might be empty on first deploy)
+        return sorted(set(_fs_list()) | set(_local_list()))
     return _local_list()
 
 
