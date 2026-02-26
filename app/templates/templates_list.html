@@ -7,56 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
-<style>
-  .page-card { max-width: 860px; margin: 2rem auto; }
-  .page-card h2 { margin-bottom: 1.4rem; }
-  .back-link { display: inline-block; margin-bottom: 1.5rem; color: #6b7280; text-decoration: none; font-size: 0.9rem; }
-  .back-link:hover { color: #374151; }
 
-  .upload-section { margin-bottom: 2rem; padding: 1.25rem 1.5rem; border: 1px dashed #d1d5db; border-radius: 8px; background: #f9fafb; }
-  .upload-section h3 { margin-bottom: 0.75rem; font-size: 1rem; }
-  .upload-row { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
-  .upload-row input[type=file] { flex: 1; min-width: 200px; font-size: 0.9rem; }
-  .btn { padding: 0.45rem 1.1rem; border-radius: 6px; border: none; cursor: pointer; font-size: 0.9rem; font-weight: 600; transition: background 0.15s; }
-  .btn-primary { background: #2563eb; color: #fff; }
-  .btn-primary:hover { background: #1d4ed8; }
-  .btn-danger { background: #dc2626; color: #fff; font-size: 0.8rem; padding: 0.3rem 0.75rem; }
-  .btn-danger:hover { background: #b91c1c; }
-  .btn-secondary { background: #e5e7eb; color: #374151; font-size: 0.8rem; padding: 0.3rem 0.75rem; }
-  .btn-secondary:hover { background: #d1d5db; }
-  .btn-run { background: #16a34a; color: #fff; font-size: 0.8rem; padding: 0.3rem 0.75rem; border-radius: 6px; text-decoration: none; display: inline-flex; align-items: center; font-weight: 600; transition: background 0.15s; }
-  .btn-run:hover { background: #15803d; }
-
-  .alert { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; display: none; }
-  .alert-error { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
-  .alert-success { background: #d1fae5; color: #065f46; border: 1px solid #6ee7b7; }
-  .alert.show { display: block; }
-
-  .templates-table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
-  .templates-table th { text-align: left; padding: 0.6rem 0.75rem; background: #f3f4f6; font-weight: 600; color: #374151; border-bottom: 2px solid #e5e7eb; }
-  .templates-table td { padding: 0.6rem 0.75rem; border-bottom: 1px solid #f3f4f6; vertical-align: middle; }
-  .templates-table tr:hover td { background: #f9fafb; }
-  .template-name { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; color: #1d4ed8; }
-  .actions { display: flex; gap: 0.5rem; align-items: center; }
-  .empty-state { text-align: center; color: #9ca3af; padding: 2.5rem 1rem; font-size: 0.95rem; }
-
-  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: none; align-items: center; justify-content: center; z-index: 100; }
-  .modal-overlay.open { display: flex; }
-  .modal { background: #fff; border-radius: 10px; padding: 1.5rem; width: 90%; max-width: 680px; max-height: 80vh; display: flex; flex-direction: column; box-shadow: 0 20px 50px rgba(0,0,0,0.25); }
-  .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
-  .modal-header h3 { margin: 0; font-size: 1rem; }
-  .modal-close { background: none; border: none; font-size: 1.4rem; cursor: pointer; color: #6b7280; line-height: 1; }
-  .modal-body { overflow: auto; flex: 1; }
-  .json-pre { background: #1e1e2e; color: #cdd6f4; padding: 1rem; border-radius: 6px; font-family: 'JetBrains Mono', monospace; font-size: 0.82rem; line-height: 1.55; white-space: pre; overflow-x: auto; margin: 0; }
-
-  .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.4rem; }
-  .page-header h2 { margin: 0; }
-  .page-header-actions { display: flex; gap: 0.5rem; align-items: center; }
-  .btn-editor { background: #7c3aed; color: #fff; text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.9rem; border-radius: 6px; font-size: 0.88rem; font-weight: 600; transition: background 0.15s; }
-  .btn-editor:hover { background: #6d28d9; }
-  .btn-preview { background: #0891b2; color: #fff; text-decoration: none; display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.4rem 0.9rem; border-radius: 6px; font-size: 0.88rem; font-weight: 600; transition: background 0.15s; }
-  .btn-preview:hover { background: #0e7490; }
-</style>
 </head>
 <body>
 <div class="app">
@@ -106,8 +57,8 @@
           <tr id="row-{{ t.template_name | replace('.', '_') | replace(' ', '_') }}">
             <td><span class="template-name">{{ t.template_name }}</span></td>
             <td>{{ t.zones | length }}</td>
-            <td style="font-family:'JetBrains Mono',monospace;font-size:0.82rem;">{{ t.source_size[0] }}×{{ t.source_size[1] }}</td>
-            <td style="font-size:0.82rem;color:#6b7280;">{{ t.updated_at_utc or '—' }}</td>
+            <td class="mono-subtle">{{ t.source_size[0] }}×{{ t.source_size[1] }}</td>
+            <td class="muted-subtle">{{ t.updated_at_utc or '—' }}</td>
             <td>
               <div class="actions">
                 <a class="btn-run" href="/templates/{{ t.template_name }}/run">▶ Run</a>
@@ -201,8 +152,8 @@ function addRowToTable(t) {
   tr.innerHTML = `
     <td><span class="template-name">${escHtml(t.template_name)}</span></td>
     <td>${(t.zones||[]).length}</td>
-    <td style="font-family:'JetBrains Mono',monospace;font-size:0.82rem;">${t.source_size[0]}×${t.source_size[1]}</td>
-    <td style="font-size:0.82rem;color:#6b7280;">${t.updated_at_utc||'—'}</td>
+    <td class="mono-subtle">${t.source_size[0]}×${t.source_size[1]}</td>
+    <td class="muted-subtle">${t.updated_at_utc||'—'}</td>
     <td><div class="actions">
       <a class="btn-run" href="/templates/${encodeURIComponent(t.template_name)}/run">▶ Run</a>
       <button class="btn btn-secondary" onclick="viewTemplate('${escHtml(t.template_name)}')">View</button>
