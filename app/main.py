@@ -245,13 +245,6 @@ async def login(password: str = Form(...)):
     return response
 
 
-@app.post("/logout")
-async def logout(csrf_token: str = Form(...)):
-    response = RedirectResponse(url="/login", status_code=302)
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
-    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
-    return response
-
 
 @app.get("/about", response_class=HTMLResponse)
 async def about(request: Request):
