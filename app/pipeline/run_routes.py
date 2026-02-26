@@ -76,22 +76,22 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
 
 def _prefetch_google_batch(
     image_bytes: bytes,
-    zones: list[ZoneDef],
+    zones: list,
     source_size: list,
-) -> dict[int, bytes]:
+) -> dict:
     """
     Crop images for all zones that include 'google' in their engines.
     Calls google_batch_annotate_images in chunks of 16.
     Injects results into the OCR module cache via _google_cache_put.
 
     Returns a dict {zone_index: zone_bytes} for zones that were batched,
-    so run_routes can reuse the same bytes object when calling dispatch
-    (identity match required for cache lookup).
+    so run_routes can pass the SAME bytes object to dispatch_zone_ocr
+    (object-identity match required for cache lookup).
 
     Never raises.
     """
-    # Collect (zone_index, zone_bytes) for Google zones
-    google_jobs: list[tuple[int, bytes]] = []
+    # Collect (zone_index, zone_bytes) for Google zones only
+    google_jobs = []  # list of (zone_index, zone_bytes)
     for i, zone in enumerate(zones):
         if "google" not in zone.engines:
             continue
@@ -99,7 +99,7 @@ def _prefetch_google_batch(
             zb = _crop_zone(image_bytes, zone, source_size)
         except Exception:
             zb = image_bytes
-        google_jobs.append((i, zb);
+        google_jobs.append((i, zb))
 
     if not google_jobs:
         return {}
@@ -108,16 +108,17 @@ def _prefetch_google_batch(
     try:
         batch_results = google_batch_annotate_images(job_bytes)
     except Exception:
-        # If batch helper itself raises (shouldn't), fall back to per-call
-        batch_results = []
+        # If batch helper itself raises (shouldn't), return empty map
+        # so dispatcher falls back to per-call path.
+        return {}
 
-    # Pad results if shorter than input (shouldn't happen, but defensive)
-    from app.ocr import OCRResult as _OCRResult
+    # Pad results if shorter than input
+    from app.ocr import OCRResult
     while len(batch_results) < len(google_jobs):
-        batch_results.append(_OCRResult("", 0.0, "google"))
+        batch_results.append(OCRResult("", 0.0, "google"))
 
     # Inject into cache keyed by object id of each zone_bytes
-    zone_bytes_map: dict[int, bytes] = {}
+    zone_bytes_map = {}
     for (zone_idx, zb), result in zip(google_jobs, batch_results):
         _google_cache_put(zb, result)
         zone_bytes_map[zone_idx] = zb
@@ -150,7 +151,7 @@ async def run_template(
     }
     """
     run_id = str(uuid.uuid4())
-    batched_zone_bytes: dict[int, bytes] = {}
+    batched_zone_bytes: dict = {}
     try:
         tmpl = template_store.get_template(template_name)
         if tmpl is None:
