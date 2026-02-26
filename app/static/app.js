@@ -135,7 +135,7 @@ $uploadForm.addEventListener('submit', async (e) => {
   startTimer();
 
   try {
-    const resp = await fetch('/upload', { method: 'POST', body: fd });
+    const resp = await fetch('/api/upload', { method: 'POST', body: fd });
     const data = await resp.json();
     if (!resp.ok) throw new Error(data.detail || 'Upload failed');
     state.sessionId = data.session_id;
@@ -149,7 +149,7 @@ $uploadForm.addEventListener('submit', async (e) => {
 
 // ── SSE ─────────────────────────────────────────────────────────────────
 function subscribeSSE(sessionId) {
-  const es = new EventSource('/progress/' + sessionId);
+  const es = new EventSource('/api/progress/' + sessionId);
   let total = 0, done = 0;
 
   es.onmessage = (ev) => {
@@ -205,7 +205,7 @@ function updateSummary(msg) {
 // ── Load results ────────────────────────────────────────────────────────
 async function loadResults() {
   if (!state.sessionId) return;
-  const url = '/results/' + state.sessionId + '?page=' + state.page +
+  const url = '/api/results/' + state.sessionId + '?page=' + state.page +
               '&hide_pass=' + state.hidePass + '&per_page=' + state.perPage;
   const resp = await fetch(url);
   const data = await resp.json();
@@ -328,7 +328,7 @@ async function handleDecision(e) {
   const btn = e.currentTarget;
   const id = btn.dataset.id, action = btn.dataset.action;
   const fd = new FormData(); fd.append('decision', action);
-  await fetch('/decide/' + id, { method: 'POST', body: fd });
+  await fetch('/api/decide/' + id, { method: 'POST', body: fd });
   const cell = btn.closest('td');
   cell.innerHTML = action === 'ok'
     ? '<span class="decision-ok">\u2713 OK</span>'
@@ -365,7 +365,7 @@ function renderPagination(current, total) {
 
 // ── Controls ────────────────────────────────────────────────────────────
 $hidePass.addEventListener('change', () => { state.hidePass = $hidePass.checked; state.page = 1; loadResults(); });
-$btnDownload.addEventListener('click', () => { if (state.sessionId) window.location.href = '/download/' + state.sessionId; });
+$btnDownload.addEventListener('click', () => { if (state.sessionId) window.location.href = '/api/download/' + state.sessionId; });
 $btnNew.addEventListener('click', () => {
   state.sessionId = null; state.page = 1; state.status = 'idle'; state.engines = [];
   if (state.timerInterval) clearInterval(state.timerInterval);

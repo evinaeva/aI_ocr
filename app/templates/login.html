@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Login</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <main class="container" style="max-width: 420px; margin-top: 4rem;">
+    <h1>Login</h1>
+    <form method="post" action="/login">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
+      <label for="password">Password</label>
+      <input id="password" name="password" type="password" required style="display:block;width:100%;margin:0.5rem 0 1rem;" />
+      <button type="submit">Sign in</button>
+    </form>
+  </main>
+</body>
+</html>
