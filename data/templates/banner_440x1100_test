@@ -6,7 +6,7 @@
     {
       "name": "headline",
       "type": "ocr",
-      "bbox": [10, 80, 503, 300],
+      "bbox": [10, 80, 430, 300],
       "engines": ["google"],
       "engine_config": {},
       "notes": "test zone"
@@ -15,4 +15,5 @@
   "expected_texts": {},
   "created_at_utc": "2026-02-24T22:00:00Z",
   "updated_at_utc": "2026-02-24T22:00:00Z"
+
 }
