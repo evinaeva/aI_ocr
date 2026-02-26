@@ -160,8 +160,11 @@ async def update_zone_review(run_id: str, zone_index: int, body: dict):
 
         @_fs.transactional
         def _do_update(transaction):
-            zone_snap = transaction.get(zone_ref)
-            header_snap = transaction.get(header_ref)
+            # transaction.get() on a DocumentReference returns a generator in
+            # newer Firestore client versions; consume it with next() to get the
+            # actual DocumentSnapshot.
+            zone_snap = next(transaction.get(zone_ref))
+            header_snap = next(transaction.get(header_ref))
 
             if not header_snap.exists:
                 return "header_not_found"
