@@ -56,6 +56,11 @@ const $lightbox        = $('lightbox');
 const $lightboxImg     = $('lightbox-img');
 const $lightboxClose   = $('lightbox-close');
 
+function setSectionVisible(el, visible) {
+  el.classList.toggle('is-hidden', !visible);
+  el.style.display = visible ? '' : 'none';
+}
+
 // ── Engine chip selection (checkboxes) ─────────────────────────────────
 function initEngineChips() {
   document.querySelectorAll('.engine-chip').forEach(chip => {
@@ -127,10 +132,10 @@ $uploadForm.addEventListener('submit', async (e) => {
   if (snm) fd.append('section_name', snm);
 
   $submitBtn.disabled = true;
-  $uploadSection.style.display = 'none';
-  $progressSection.style.display = '';
-  $summarySection.style.display = 'none';
-  $resultsSection.style.display = 'none';
+  setSectionVisible($uploadSection, false);
+  setSectionVisible($progressSection, true);
+  setSectionVisible($summarySection, false);
+  setSectionVisible($resultsSection, false);
   state.engines = engines;
   startTimer();
 
@@ -167,17 +172,17 @@ function subscribeSSE(sessionId) {
       setProgress(total, total, 'Done!');
       state.status = 'done';
       updateSummary(msg);
-      $progressSection.style.display = 'none';
-      $summarySection.style.display = '';
-      $resultsSection.style.display = '';
+      setSectionVisible($progressSection, false);
+      setSectionVisible($summarySection, true);
+      setSectionVisible($resultsSection, true);
       loadResults();
     }
     if (msg.event === 'error') {
       es.close();
-      $progressSection.style.display = 'none';
+      setSectionVisible($progressSection, false);
       showError(msg.message || 'Unknown error');
       $submitBtn.disabled = false;
-      $uploadSection.style.display = '';
+      setSectionVisible($uploadSection, true);
     }
   };
   es.onerror = () => {
@@ -378,10 +383,10 @@ $btnNew.addEventListener('click', () => {
   const firstChip = document.querySelector('.engine-chip');
   const firstCb   = firstChip && firstChip.querySelector('input[type=checkbox]');
   if (firstCb) { firstCb.checked = true; firstChip.classList.add('selected'); }
-  $summarySection.style.display = 'none';
-  $resultsSection.style.display = 'none';
-  $progressSection.style.display = 'none';
-  $uploadSection.style.display = '';
+  setSectionVisible($summarySection, false);
+  setSectionVisible($resultsSection, false);
+  setSectionVisible($progressSection, false);
+  setSectionVisible($uploadSection, true);
   $resultsBody.innerHTML = '';
   $resultsThead.innerHTML = '';
   $pagination.innerHTML = '';
@@ -401,8 +406,8 @@ function esc(str) {
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 function showError(msg) {
-  $progressSection.style.display = 'none';
-  $uploadSection.style.display = '';
+  setSectionVisible($progressSection, false);
+  setSectionVisible($uploadSection, true);
   const div = document.createElement('div');
   div.className = 'error-msg';
   div.textContent = '\u26a0 ' + msg;
