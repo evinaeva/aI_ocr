@@ -31,6 +31,7 @@ import logging
 import time
 import uuid
 from typing import AsyncGenerator, Dict, Optional
+from zipfile import ZipFile
 
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -273,112 +274,122 @@ async def _process_batch_job(
         results = []
         manual_count = ok_count = error_count = 0
 
-        for idx, target in enumerate(targets):
-            target_id = target.target_id
+        # Open ZIP once for all targets; read image bytes via item.archive_path
+        with ZipFile(io.BytesIO(zip_bytes)) as zf:
+            for idx, target in enumerate(targets):
+                target_id = target.target_id
 
-            # Determine language for this target
-            lang = lang_hint
-            if not lang:
-                # Use EN if available (has_en flag), else first lang in target images
-                if target.has_en:
-                    lang = "en"
-                elif target.images:
-                    lang = sorted(target.images.keys())[0]
+                # Build lang -> image_bytes from manifest items (deterministic: sorted by lang)
+                images_by_lang: Dict[str, bytes] = {}
+                for item in sorted(target.items, key=lambda it: (it.lang or "")):
+                    if item.lang:
+                        try:
+                            images_by_lang[item.lang] = zf.read(item.archive_path)
+                        except Exception:
+                            pass
 
-            _push_batch_event(job_id, {
-                "event": "target_start",
-                "idx": idx,
-                "target_id": target_id,
-                "lang": lang,
-                "image_count": len(target.images),
-            })
-
-            # Process the first image for this target+lang
-            # (one image per target per language, per manifest contract)
-            img_bytes = None
-            if lang in target.images:
-                img_bytes = target.images[lang]
-            elif target.images:
-                # Fallback to first available language image
-                img_bytes = next(iter(target.images.values()))
-
-            if img_bytes is None:
-                error_count += 1
-                results.append({
-                    "target_id": target_id,
-                    "lang": lang,
-                    "status": "error",
-                    "reason": "no_image",
-                    "zones": [],
-                })
-                _push_batch_event(job_id, {
-                    "event": "target_done",
-                    "idx": idx,
-                    "target_id": target_id,
-                    "status": "error",
-                    "reason": "no_image",
-                })
-                continue
-
-            try:
-                zone_results = await asyncio.to_thread(
-                    _run_zones_for_target,
-                    job_id, target_id, lang, img_bytes, tmpl,
-                )
-
-                # Determine overall target status
-                statuses = [z["consensus"].get("zone_status") for z in zone_results]
-                if "MANUAL" in statuses:
-                    target_status = "MANUAL"
-                    manual_count += 1
-                else:
-                    target_status = "OK"
-                    ok_count += 1
-
-                results.append({
-                    "target_id": target_id,
-                    "lang": lang,
-                    "status": target_status,
-                    "zones": zone_results,
-                })
-
-                log_event(
-                    "batch_target_done",
-                    run_id=job_id,
-                    target_id=target_id,
-                    lang=lang,
-                    zone_count=len(zone_results),
-                    target_status=target_status,
-                )
+                # Determine language for this target
+                lang = lang_hint
+                if not lang:
+                    # Use EN if available (has_en flag), else first lang in items
+                    if target.has_en:
+                        lang = "en"
+                    elif images_by_lang:
+                        lang = sorted(images_by_lang.keys())[0]
 
                 _push_batch_event(job_id, {
-                    "event": "target_done",
+                    "event": "target_start",
                     "idx": idx,
                     "target_id": target_id,
                     "lang": lang,
-                    "status": target_status,
-                    "zone_count": len(zone_results),
+                    "image_count": len(images_by_lang),
                 })
 
-            except Exception as exc:
-                error_count += 1
-                logger.warning(
-                    "batch_routes: target_failed job_id=%s target_id=%s: %s",
-                    job_id, target_id, type(exc).__name__,
-                )
-                results.append({
-                    "target_id": target_id,
-                    "lang": lang,
-                    "status": "error",
-                    "reason": "processing_error",
-                    "zones": [],
-                })
-                _push_batch_event(job_id, {
-                    "event": "target_done",
-                    "idx": idx,
-                    "target_id": target_id,
-                    "status": "error",
-                })
+                # Process the image for this target+lang
+                img_bytes = None
+                if lang and lang in images_by_lang:
+                    img_bytes = images_by_lang[lang]
+                elif images_by_lang:
+                    # Fallback to first available language image (deterministic)
+                    img_bytes = images_by_lang[sorted(images_by_lang.keys())[0]]
+
+                if img_bytes is None:
+                    error_count += 1
+                    results.append({
+                        "target_id": target_id,
+                        "lang": lang,
+                        "status": "error",
+                        "reason": "no_image",
+                        "zones": [],
+                    })
+                    _push_batch_event(job_id, {
+                        "event": "target_done",
+                        "idx": idx,
+                        "target_id": target_id,
+                        "status": "error",
+                        "reason": "no_image",
+                    })
+                    continue
+
+                try:
+                    zone_results = await asyncio.to_thread(
+                        _run_zones_for_target,
+                        job_id, target_id, lang, img_bytes, tmpl,
+                    )
+
+                    # Determine overall target status
+                    statuses = [z["consensus"].get("zone_status") for z in zone_results]
+                    if "MANUAL" in statuses:
+                        target_status = "MANUAL"
+                        manual_count += 1
+                    else:
+                        target_status = "OK"
+                        ok_count += 1
+
+                    results.append({
+                        "target_id": target_id,
+                        "lang": lang,
+                        "status": target_status,
+                        "zones": zone_results,
+                    })
+
+                    log_event(
+                        "batch_target_done",
+                        run_id=job_id,
+                        target_id=target_id,
+                        lang=lang,
+                        zone_count=len(zone_results),
+                        target_status=target_status,
+                    )
+
+                    _push_batch_event(job_id, {
+                        "event": "target_done",
+                        "idx": idx,
+                        "target_id": target_id,
+                        "lang": lang,
+                        "status": target_status,
+                        "zone_count": len(zone_results),
+                    })
+
+                except Exception as exc:
+                    error_count += 1
+                    logger.warning(
+                        "batch_routes: target_failed job_id=%s target_id=%s: %s",
+                        job_id, target_id, type(exc).__name__,
+                    )
+                    results.append({
+                        "target_id": target_id,
+                        "lang": lang,
+                        "status": "error",
+                        "reason": "processing_error",
+                        "zones": [],
+                    })
+                    _push_batch_event(job_id, {
+                        "event": "target_done",
+                        "idx": idx,
+                        "target_id": target_id,
+                        "status": "error",
+                    })
 
         _JOBS[job_id].update({
             "status": "done",
