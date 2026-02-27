@@ -36,7 +36,11 @@ from .pipeline.template_editor_routes import editor_router
 from .pipeline.preview_routes import preview_router
 from .pipeline.run_routes import run_router
 from .pipeline.history_routes import history_router  # always imported — see Phase 6 fix
+<<<<<<< claude
+from .pipeline.batch_routes import batch_router  # P2.4: v2-batch job orchestration
+=======
 from .pipeline.phase2_routes import phase2_router
+>>>>>>> main
 from .pipeline import template_store
 from .pipeline.preprocessor import maybe_upscale
 
@@ -141,7 +145,11 @@ app.include_router(editor_router)
 app.include_router(preview_router)
 app.include_router(run_router)
 app.include_router(history_router)  # unconditional — endpoints return 503 when persistence disabled
+<<<<<<< claude
+app.include_router(batch_router)   # P2.4: v2-batch job orchestration (additive)
+=======
 app.include_router(phase2_router)
+>>>>>>> main
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _sse_queues: Dict[str, asyncio.Queue] = {}
