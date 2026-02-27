@@ -16,26 +16,33 @@ import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Optional
+from urllib.parse import unquote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from .normalizer import normalize_strict, clean_for_display
-from .ocr import run_ocr_multi, ALL_ENGINES, emit_startup_warnings
-from .section_matcher import extract_sections, select_best
-from .zip_processor import process_zip, build_zip_manifest
-from .version import APP_VERSION, BUILD_TIME_UTC, get_build_info
 from .logging_utils import log_event
-from .pipeline.template_routes import router as template_router
-from .pipeline.template_editor_routes import editor_router
+from .normalizer import clean_for_display, normalize_strict
+from .ocr import ALL_ENGINES, emit_startup_warnings, run_ocr_multi
+from .pipeline import template_store
+from .pipeline.batch_routes import batch_router  # P2.4: v2-batch job orchestration
+from .pipeline.history_routes import history_router  # always imported — see Phase 6 fix
+from .pipeline.phase2_routes import phase2_router
 from .pipeline.preview_routes import preview_router
 from .pipeline.run_routes import run_router
-from .pipeline.history_routes import history_router  # always imported — see Phase 6 fix
-from .pipeline.batch_routes import batch_router  # P2.4: v2-batch job orchestration
-from .pipeline.phase2_routes import phase2_router
-from .pipeline import template_store
+from .pipeline.template_editor_routes import editor_router
+from .pipeline.template_routes import router as template_router
+from .section_matcher import extract_sections, select_best
+from .version import APP_VERSION, BUILD_TIME_UTC, get_build_info
+from .zip_processor import build_zip_manifest, process_zip
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,7 +72,8 @@ def get_db() -> sqlite3.Connection:
 
 def init_db():
     conn = get_db()
-    conn.executescript("""
+    conn.executescript(
+        """
         CREATE TABLE IF NOT EXISTS sessions (
             session_id TEXT PRIMARY KEY,
             created_at REAL,
@@ -105,7 +113,8 @@ def init_db():
             section_number INTEGER,
             section_name TEXT
         );
-    """)
+    """
+    )
     # Migration: add engines column if missing (for old deployments)
     try:
         conn.execute("ALTER TABLE sessions ADD COLUMN engines TEXT")
@@ -138,7 +147,7 @@ app.include_router(editor_router)
 app.include_router(preview_router)
 app.include_router(run_router)
 app.include_router(history_router)  # unconditional — endpoints return 503 when persistence disabled
-app.include_router(batch_router)   # P2.4: v2-batch job orchestration (additive)
+app.include_router(batch_router)  # P2.4: v2-batch job orchestration (additive)
 app.include_router(phase2_router)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
@@ -155,7 +164,11 @@ def _b64url_decode(data: str) -> bytes:
 
 
 def _sign_payload(payload_b64: str) -> str:
-    sig = hmac.new(SESSION_SECRET.encode("utf-8"), payload_b64.encode("utf-8"), hashlib.sha256).digest()
+    sig = hmac.new(
+        SESSION_SECRET.encode("utf-8"),
+        payload_b64.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
     return _b64url_encode(sig)
 
 
@@ -185,8 +198,6 @@ def _is_authenticated(request: Request) -> bool:
     now = int(time.time())
     delta = now - iat
     return 0 <= delta <= SESSION_TTL_SECONDS
-
-
 
 
 def _cleanup_phase2_uploads(conn: sqlite3.Connection):
@@ -231,9 +242,8 @@ async def auth_middleware(request: Request, call_next):
     # and raise "Field required" for the password parameter.
     if method == "POST" and not is_api and path != "/login":
         content_type = (request.headers.get("content-type") or "").lower()
-        is_form_post = (
-            content_type.startswith("application/x-www-form-urlencoded")
-            or content_type.startswith("multipart/form-data")
+        is_form_post = content_type.startswith("application/x-www-form-urlencoded") or content_type.startswith(
+            "multipart/form-data"
         )
         if is_form_post:
             csrf_cookie = request.cookies.get(CSRF_COOKIE_NAME, "")
@@ -284,18 +294,20 @@ async def login(password: str = Form(...)):
     return response
 
 
-
 @app.get("/about", response_class=HTMLResponse)
 async def about(request: Request):
-    return templates.TemplateResponse("about.html", {
-        "request": request,
-        "app_version": APP_VERSION,
-        "build_time_utc": BUILD_TIME_UTC,
-        "all_engines": ALL_ENGINES,
-        "env_azure_endpoint": bool(os.getenv("AZURE_OCR_ENDPOINT", "").strip()),
-        "env_azure_key": bool(os.getenv("AZURE_OCR_KEY", "").strip()),
-        "env_ocrspace_key": bool(os.getenv("OCR_SPACE_API_KEY", "").strip()),
-    })
+    return templates.TemplateResponse(
+        "about.html",
+        {
+            "request": request,
+            "app_version": APP_VERSION,
+            "build_time_utc": BUILD_TIME_UTC,
+            "all_engines": ALL_ENGINES,
+            "env_azure_endpoint": bool(os.getenv("AZURE_OCR_ENDPOINT", "").strip()),
+            "env_azure_key": bool(os.getenv("AZURE_OCR_KEY", "").strip()),
+            "env_ocrspace_key": bool(os.getenv("OCR_SPACE_API_KEY", "").strip()),
+        },
+    )
 
 
 @app.get("/templates", response_class=HTMLResponse)
@@ -306,18 +318,24 @@ async def templates_list(request: Request):
         t = template_store.get_template(name)
         if t:
             tmpl_objects.append(t)
-    return templates.TemplateResponse("templates_list.html", {
-        "request": request,
-        "templates": tmpl_objects,
-    })
+    return templates.TemplateResponse(
+        "templates_list.html",
+        {
+            "request": request,
+            "templates": tmpl_objects,
+        },
+    )
 
 
 @app.get("/templates/{template_name}/run", response_class=HTMLResponse)
 async def template_run_page(request: Request, template_name: str):
-    return templates.TemplateResponse("template_run.html", {
-        "request": request,
-        "template_name": template_name,
-    })
+    return templates.TemplateResponse(
+        "template_run.html",
+        {
+            "request": request,
+            "template_name": template_name,
+        },
+    )
 
 
 # Editor logging endpoints (called by JS, no-op beyond logging)
@@ -347,6 +365,9 @@ async def log_editor_load(request: Request):
 
 @app.get("/image/{session_id}/{filename:path}")
 async def get_image(session_id: str, filename: str):
+    # Important for nested paths passed via URL encoding
+    filename = unquote(filename)
+
     conn = get_db()
     row = conn.execute(
         "SELECT data FROM images WHERE session_id=? AND filename=?",
@@ -361,6 +382,7 @@ async def get_image(session_id: str, filename: str):
     conn.close()
     if not row:
         return Response(status_code=404)
+
     fname_lower = filename.lower()
     if fname_lower.endswith(".png"):
         media_type = "image/png"
@@ -419,12 +441,14 @@ async def phase2_manifest(
     targets = []
     for t in manifest:
         en_item = next((it for it in t.items if it.lang == "en"), None)
-        targets.append({
-            "target_id": t.target_id,
-            "en_available": t.has_en,
-            "preview_en_path": en_item.archive_path if en_item else None,
-            "items_count": len(t.items),
-        })
+        targets.append(
+            {
+                "target_id": t.target_id,
+                "en_available": t.has_en,
+                "preview_en_path": en_item.archive_path if en_item else None,
+                "items_count": len(t.items),
+            }
+        )
 
     return JSONResponse({"upload_id": upload_id, "targets": targets})
 
@@ -504,9 +528,7 @@ def _start_session_from_zip(
     conn.commit()
     conn.close()
 
-    asyncio.create_task(
-        _process_session(session_id, zip_bytes, section_number, section_name, engines)
-    )
+    asyncio.create_task(_process_session(session_id, zip_bytes, section_number, section_name, engines))
     return session_id
 
 
@@ -537,13 +559,10 @@ async def _process_session(
     engines: List[str],
 ):
     conn = get_db()
-    conn.execute(
-        "UPDATE sessions SET status='processing' WHERE session_id=?", (session_id,)
-    )
+    conn.execute("UPDATE sessions SET status='processing' WHERE session_id=?", (session_id,))
     conn.commit()
 
     locked_section_number: Optional[int] = hint_number
-
     archive_label = f"session:{session_id}"
 
     try:
@@ -554,23 +573,17 @@ async def _process_session(
         total = len(langs)
 
         if hint_name and locked_section_number is None:
-            ref_lang = "en" if "en" in contents.texts else (
-                sorted(contents.texts.keys())[0] if contents.texts else None
-            )
+            ref_lang = "en" if "en" in contents.texts else (sorted(contents.texts.keys())[0] if contents.texts else None)
             if ref_lang:
                 ref_fname, ref_bytes = contents.texts[ref_lang]
-                ref_sections = await asyncio.get_event_loop().run_in_executor(
-                    None, extract_sections, ref_bytes, ref_fname
-                )
+                ref_sections = await asyncio.get_event_loop().run_in_executor(None, extract_sections, ref_bytes, ref_fname)
                 hint_lower = hint_name.strip().lower()
                 for sec in ref_sections:
                     if hint_lower in sec.name.lower():
                         locked_section_number = sec.number
                         break
 
-        conn.execute(
-            "UPDATE sessions SET total=? WHERE session_id=?", (total, session_id)
-        )
+        conn.execute("UPDATE sessions SET total=? WHERE session_id=?", (total, session_id))
         conn.commit()
         _push_event(session_id, {"event": "start", "total": total, "engines": engines})
 
@@ -578,91 +591,96 @@ async def _process_session(
 
         for idx, lang in enumerate(langs):
             image_bytes = contents.images[lang]
-            image_name  = contents.image_names[lang]
-            image_key   = image_name.split("/")[-1]
+            image_name = contents.image_names[lang]  # IMPORTANT: full archive path
 
+            # Store image bytes with the same key that results.image_name will use (for /image and /download joins)
             conn.execute(
                 "INSERT OR REPLACE INTO images VALUES (?,?,?)",
-                (session_id, image_key, image_bytes),
+                (session_id, image_name, image_bytes),
             )
             conn.commit()
 
-            _push_event(session_id, {
-                "event": "progress", "idx": idx, "lang": lang,
-                "step": "ocr", "message": f"OCR {lang} [{', '.join(engines)}]..."
-            })
-
-            ocr_results = await asyncio.get_event_loop().run_in_executor(
-                None, run_ocr_multi, image_bytes, engines
+            _push_event(
+                session_id,
+                {
+                    "event": "progress",
+                    "idx": idx,
+                    "lang": lang,
+                    "step": "ocr",
+                    "message": f"OCR {lang} [{', '.join(engines)}]...",
+                },
             )
 
+            ocr_results = await asyncio.get_event_loop().run_in_executor(None, run_ocr_multi, image_bytes, engines)
+
+            # FIX: confidence can be None -> normalize before comparing
             best_engine = None
             best_text = ""
             best_conf = -1.0
             for eng, res in ocr_results.items():
-			    conf = float(res.confidence) if isinstance(res.confidence, (int, float)) else -1.0
-				if conf > best_conf and res.text:
-				    best_conf = conf
+                conf = float(res.confidence) if isinstance(res.confidence, (int, float)) else -1.0
+                if conf > best_conf and res.text:
+                    best_conf = conf
                     best_text = res.text
                     best_engine = eng
-			
-            best_text   = ""
-            best_conf   = -1.0
-            for eng, res in ocr_results.items():
-                if res.confidence > best_conf and res.text:
-                    best_conf   = res.confidence
-                    best_text   = res.text
-                    best_engine = eng
 
-            ocr_results_display = {
-                eng: clean_for_display(res.text)
-                for eng, res in ocr_results.items()
-            }
+            ocr_results_display = {eng: clean_for_display(res.text) for eng, res in ocr_results.items()}
 
-            logger.info("lang=%s best_engine=%s best_conf=%.3f ocr_len=%d",
-                        lang, best_engine, best_conf, len(best_text))
+            logger.info(
+                "lang=%s best_engine=%s best_conf=%.3f ocr_len=%d",
+                lang,
+                best_engine,
+                best_conf,
+                len(best_text),
+            )
 
             ref_text = ""
             section_name_found = ""
-            section_num_found  = None
-            status     = "MANUAL"
-            score_val  = 0.0
-            reason     = "no_text_file"
-            text_name  = ""
+            section_num_found = None
+            status = "MANUAL"
+            score_val = 0.0
+            reason = "no_text_file"
+            text_name = ""
 
             if lang in contents.texts:
                 fname, file_bytes = contents.texts[lang]
                 text_name = fname
 
-                _push_event(session_id, {
-                    "event": "progress", "idx": idx, "lang": lang,
-                    "step": "match", "message": f"Matching {lang}..."
-                })
-
-                sections = await asyncio.get_event_loop().run_in_executor(
-                    None, extract_sections, file_bytes, fname
+                _push_event(
+                    session_id,
+                    {
+                        "event": "progress",
+                        "idx": idx,
+                        "lang": lang,
+                        "step": "match",
+                        "message": f"Matching {lang}...",
+                    },
                 )
 
+                sections = await asyncio.get_event_loop().run_in_executor(None, extract_sections, file_bytes, fname)
+
                 selection = await asyncio.get_event_loop().run_in_executor(
-                    None, select_best, sections, best_text, lang,
-                    locked_section_number, hint_name
+                    None,
+                    select_best,
+                    sections,
+                    best_text,
+                    lang,
+                    locked_section_number,
+                    hint_name,
                 )
 
                 status = selection.status
                 reason = selection.reason
                 if selection.best:
-                    ref_text           = clean_for_display(selection.best.section.content_text)
+                    ref_text = clean_for_display(selection.best.section.content_text)
                     section_name_found = selection.best.section.name
-                    section_num_found  = selection.best.section.number
-                    score_val          = selection.best.score
+                    section_num_found = selection.best.section.number
+                    score_val = selection.best.score
 
                     if locked_section_number is None and section_num_found is not None:
                         locked_section_number = section_num_found
 
-                logger.info(
-                    "lang=%s status=%s reason=%s section=%s",
-                    lang, status, reason, section_name_found,
-                )
+                logger.info("lang=%s status=%s reason=%s section=%s", lang, status, reason, section_name_found)
             else:
                 status = "MANUAL"
                 reason = "no_text_file"
@@ -674,18 +692,16 @@ async def _process_session(
             else:
                 manual_count += 1
 
-            ocr_json = json.dumps({
-                eng: {
-                    "text": ocr_results_display.get(eng, ""),
-                    "confidence": (
-					    round(ocr_results[eng].confidence, 4)
-						if isinstance(ocr_results[eng].confidence, (int, float))
-						else None
-					),
+            ocr_json = json.dumps(
+                {
+                    eng: {
+                        "text": ocr_results_display.get(eng, ""),
+                        "confidence": (round(ocr_results[eng].confidence, 4) if isinstance(ocr_results[eng].confidence, (int, float)) else None),
+                    }
+                    for eng in engines
+                    if eng in ocr_results
                 }
-                for eng in engines
-                if eng in ocr_results
-            })
+            )
 
             conn.execute(
                 """INSERT INTO results
@@ -693,17 +709,34 @@ async def _process_session(
                     section_name, section_number, status, score, reason,
                     ocr_results_json, best_engine)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (session_id, lang, image_key, text_name, ref_text,
-                 section_name_found, section_num_found, status, score_val, reason,
-                 ocr_json, best_engine),
+                (
+                    session_id,
+                    lang,
+                    image_name,  # IMPORTANT: full archive path
+                    text_name,
+                    ref_text,
+                    section_name_found,
+                    section_num_found,
+                    status,
+                    score_val,
+                    reason,
+                    ocr_json,
+                    best_engine,
+                ),
             )
             conn.commit()
 
-            _push_event(session_id, {
-                "event": "item", "idx": idx, "lang": lang,
-                "image_name": image_key, "status": status,
-                "best_engine": best_engine,
-            })
+            _push_event(
+                session_id,
+                {
+                    "event": "item",
+                    "idx": idx,
+                    "lang": lang,
+                    "image_name": image_name,  # IMPORTANT: full archive path
+                    "status": status,
+                    "best_engine": best_engine,
+                },
+            )
 
         conn.execute(
             """UPDATE sessions SET status='done',
@@ -712,18 +745,21 @@ async def _process_session(
             (pass_count, fail_count, manual_count, session_id),
         )
         conn.commit()
-        _push_event(session_id, {
-            "event": "done",
-            "pass": pass_count, "fail": fail_count, "manual": manual_count,
-            "engines": engines,
-        })
+        _push_event(
+            session_id,
+            {
+                "event": "done",
+                "pass": pass_count,
+                "fail": fail_count,
+                "manual": manual_count,
+                "engines": engines,
+            },
+        )
         log_event("run_end", run_id=session_id, status="ok")
 
     except Exception as exc:
         logger.exception("Processing error for session %s", session_id)
-        conn.execute(
-            "UPDATE sessions SET status='error' WHERE session_id=?", (session_id,)
-        )
+        conn.execute("UPDATE sessions SET status='error' WHERE session_id=?", (session_id,))
         conn.commit()
         _push_event(session_id, {"event": "error", "message": str(exc)})
         log_event("run_end", run_id=session_id, status="error")
@@ -739,9 +775,7 @@ async def get_results(
     per_page: int = 20,
 ):
     conn = get_db()
-    session = conn.execute(
-        "SELECT * FROM sessions WHERE session_id=?", (session_id,)
-    ).fetchone()
+    session = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
     if not session:
         conn.close()
         return JSONResponse({"error": "session not found"}, status_code=404)
@@ -767,21 +801,23 @@ async def get_results(
                 ocr_data = json.loads(raw_json)
         except Exception:
             pass
-        results.append({
-            "id": r["id"],
-            "lang": r["lang"],
-            "image_name": r["image_name"],
-            "text_name": r["text_name"],
-            "ref_text": r["ref_text"],
-            "section_name": r["section_name"],
-            "section_number": r["section_number"],
-            "status": r["status"],
-            "score": r["score"],
-            "reason": r["reason"],
-            "manual_decision": r["manual_decision"],
-            "ocr_results": ocr_data,
-            "best_engine": r["best_engine"],
-        })
+        results.append(
+            {
+                "id": r["id"],
+                "lang": r["lang"],
+                "image_name": r["image_name"],
+                "text_name": r["text_name"],
+                "ref_text": r["ref_text"],
+                "section_name": r["section_name"],
+                "section_number": r["section_number"],
+                "status": r["status"],
+                "score": r["score"],
+                "reason": r["reason"],
+                "manual_decision": r["manual_decision"],
+                "ocr_results": ocr_data,
+                "best_engine": r["best_engine"],
+            }
+        )
 
     try:
         engines_str = session["engines"] or "google"
@@ -789,22 +825,24 @@ async def get_results(
     except Exception:
         engines_list = ["google"]
 
-    return JSONResponse({
-        "session": {
-            "session_id": session["session_id"],
-            "status": session["status"],
-            "total": session["total"],
-            "pass_count": session["pass_count"],
-            "fail_count": session["fail_count"],
-            "manual_count": session["manual_count"],
-            "engines": engines_list,
-        },
-        "results": results,
-        "page": page,
-        "per_page": per_page,
-        "total_rows": total_rows,
-        "total_pages": max(1, (total_rows + per_page - 1) // per_page),
-    })
+    return JSONResponse(
+        {
+            "session": {
+                "session_id": session["session_id"],
+                "status": session["status"],
+                "total": session["total"],
+                "pass_count": session["pass_count"],
+                "fail_count": session["fail_count"],
+                "manual_count": session["manual_count"],
+                "engines": engines_list,
+            },
+            "results": results,
+            "page": page,
+            "per_page": per_page,
+            "total_rows": total_rows,
+            "total_pages": max(1, (total_rows + per_page - 1) // per_page),
+        }
+    )
 
 
 @app.post("/api/decide/{result_id}")
@@ -828,31 +866,27 @@ async def debug_ocr(zip_file: UploadFile = File(...)):
     results = []
     for lang in langs[:2]:
         image_bytes = contents.images[lang]
-        ocr_results = await asyncio.get_event_loop().run_in_executor(
-            None, run_ocr_multi, image_bytes, ALL_ENGINES
-        )
+        ocr_results = await asyncio.get_event_loop().run_in_executor(None, run_ocr_multi, image_bytes, ALL_ENGINES)
         best = max(
-		    ocr_results.values(),
+            ocr_results.values(),
             key=lambda r: (float(r.confidence) if isinstance(r.confidence, (int, float)) else -1.0),
             default=None,
         )
-        
         best_text = best.text if best else ""
         sections_data, ref_info = [], {}
         if lang in contents.texts:
             fname, file_bytes = contents.texts[lang]
-            sections = await asyncio.get_event_loop().run_in_executor(
-                None, extract_sections, file_bytes, fname
-            )
-            selection = await asyncio.get_event_loop().run_in_executor(
-                None, select_best, sections, best_text, lang, None, None
-            )
+            sections = await asyncio.get_event_loop().run_in_executor(None, extract_sections, file_bytes, fname)
+            selection = await asyncio.get_event_loop().run_in_executor(None, select_best, sections, best_text, lang, None, None)
             for s in sections:
-                sections_data.append({
-                    "number": s.number, "name": s.name,
-                    "content_preview": s.content_text[:80],
-                    "norm_strict": normalize_strict(s.content_text),
-                })
+                sections_data.append(
+                    {
+                        "number": s.number,
+                        "name": s.name,
+                        "content_preview": s.content_text[:80],
+                        "norm_strict": normalize_strict(s.content_text),
+                    }
+                )
             if selection.best:
                 ref_info = {
                     "matched_section": selection.best.section.name,
@@ -860,16 +894,15 @@ async def debug_ocr(zip_file: UploadFile = File(...)):
                     "reason": selection.reason,
                     "strict_equal": selection.best.strict_equal,
                 }
-        results.append({
-            "lang": lang,
-            "image_name": contents.image_names[lang],
-            "ocr_engines": {
-                eng: {"text": r.text[:200], "confidence": r.confidence}
-                for eng, r in ocr_results.items()
-            },
-            "sections": sections_data,
-            "match": ref_info,
-        })
+        results.append(
+            {
+                "lang": lang,
+                "image_name": contents.image_names[lang],
+                "ocr_engines": {eng: {"text": r.text[:200], "confidence": r.confidence} for eng, r in ocr_results.items()},
+                "sections": sections_data,
+                "match": ref_info,
+            }
+        )
     return JSONResponse(results)
 
 
