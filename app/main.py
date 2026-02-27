@@ -15,9 +15,6 @@ import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from urllib.parse import unquote
-
-from PIL import Image
 from typing import AsyncGenerator, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -36,13 +33,9 @@ from .pipeline.template_editor_routes import editor_router
 from .pipeline.preview_routes import preview_router
 from .pipeline.run_routes import run_router
 from .pipeline.history_routes import history_router  # always imported — see Phase 6 fix
-<<<<<<< claude
 from .pipeline.batch_routes import batch_router  # P2.4: v2-batch job orchestration
-=======
 from .pipeline.phase2_routes import phase2_router
->>>>>>> main
 from .pipeline import template_store
-from .pipeline.preprocessor import maybe_upscale
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -145,11 +138,8 @@ app.include_router(editor_router)
 app.include_router(preview_router)
 app.include_router(run_router)
 app.include_router(history_router)  # unconditional — endpoints return 503 when persistence disabled
-<<<<<<< claude
 app.include_router(batch_router)   # P2.4: v2-batch job orchestration (additive)
-=======
 app.include_router(phase2_router)
->>>>>>> main
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _sse_queues: Dict[str, asyncio.Queue] = {}
@@ -197,27 +187,6 @@ def _is_authenticated(request: Request) -> bool:
     return 0 <= delta <= SESSION_TTL_SECONDS
 
 
-
-
-def _prepare_image_for_ocr(image_bytes: bytes) -> bytes:
-    """Deterministic pre-OCR normalization: upscale + PNG + size guard."""
-    img = Image.open(io.BytesIO(image_bytes))
-    img.load()
-    try:
-        img, _ = maybe_upscale(img)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        payload = buf.getvalue()
-        max_bytes_raw = os.getenv("OCR_MAX_PAYLOAD_BYTES", "4194304").strip()
-        max_bytes = int(max_bytes_raw) if max_bytes_raw.isdigit() else 4194304
-        while len(payload) > max_bytes and img.width > 64 and img.height > 64:
-            img = img.resize((max(64, int(round(img.width * 0.9))), max(64, int(round(img.height * 0.9)))), Image.Resampling.LANCZOS)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            payload = buf.getvalue()
-        return payload
-    finally:
-        img.close()
 
 
 def _cleanup_phase2_uploads(conn: sqlite3.Connection):
@@ -378,7 +347,6 @@ async def log_editor_load(request: Request):
 
 @app.get("/image/{session_id}/{filename:path}")
 async def get_image(session_id: str, filename: str):
-    filename = unquote(filename)
     conn = get_db()
     row = conn.execute(
         "SELECT data FROM images WHERE session_id=? AND filename=?",
@@ -609,12 +577,13 @@ async def _process_session(
         pass_count = fail_count = manual_count = 0
 
         for idx, lang in enumerate(langs):
-            image_bytes = _prepare_image_for_ocr(contents.images[lang])
+            image_bytes = contents.images[lang]
             image_name  = contents.image_names[lang]
+            image_key   = image_name.split("/")[-1]
 
             conn.execute(
                 "INSERT OR REPLACE INTO images VALUES (?,?,?)",
-                (session_id, image_name, image_bytes),
+                (session_id, image_key, image_bytes),
             )
             conn.commit()
 
@@ -631,9 +600,8 @@ async def _process_session(
             best_text   = ""
             best_conf   = -1.0
             for eng, res in ocr_results.items():
-                conf = float(res.confidence) if isinstance(res.confidence, (int, float)) else -1.0
-                if conf > best_conf and res.text:
-                    best_conf   = conf
+                if res.confidence > best_conf and res.text:
+                    best_conf   = res.confidence
                     best_text   = res.text
                     best_engine = eng
 
@@ -693,16 +661,14 @@ async def _process_session(
             if status == "PASS":
                 pass_count += 1
             elif status == "FAIL":
-                status = "MANUAL"
-                reason = reason or "legacy_fail_mapped_to_manual"
-                manual_count += 1
+                fail_count += 1
             else:
                 manual_count += 1
 
             ocr_json = json.dumps({
                 eng: {
                     "text": ocr_results_display.get(eng, ""),
-                    "confidence": (round(ocr_results[eng].confidence, 4) if isinstance(ocr_results[eng].confidence, (int, float)) else None),
+                    "confidence": round(ocr_results[eng].confidence, 4),
                 }
                 for eng in engines
                 if eng in ocr_results
@@ -714,7 +680,7 @@ async def _process_session(
                     section_name, section_number, status, score, reason,
                     ocr_results_json, best_engine)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (session_id, lang, image_name, text_name, ref_text,
+                (session_id, lang, image_key, text_name, ref_text,
                  section_name_found, section_num_found, status, score_val, reason,
                  ocr_json, best_engine),
             )
@@ -722,7 +688,7 @@ async def _process_session(
 
             _push_event(session_id, {
                 "event": "item", "idx": idx, "lang": lang,
-                "image_name": image_name, "status": status,
+                "image_name": image_key, "status": status,
                 "best_engine": best_engine,
             })
 
@@ -833,13 +799,6 @@ async def decide(result_id: int, decision: str = Form(...)):
     if decision not in ("ok", "error"):
         return JSONResponse({"error": "invalid decision"}, status_code=400)
     conn = get_db()
-    row = conn.execute("SELECT status FROM results WHERE id=?", (result_id,)).fetchone()
-    if not row:
-        conn.close()
-        return JSONResponse({"error": "result not found"}, status_code=404)
-    if row["status"] == "PASS":
-        conn.close()
-        return JSONResponse({"error": "decision allowed only for MANUAL"}, status_code=400)
     conn.execute("UPDATE results SET manual_decision=? WHERE id=?", (decision, result_id))
     conn.commit()
     conn.close()
