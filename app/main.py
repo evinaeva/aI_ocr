@@ -597,6 +597,15 @@ async def _process_session(
             )
 
             best_engine = None
+            best_text = ""
+            best_conf = -1.0
+            for eng, res in ocr_results.items():
+			    conf = float(res.confidence) if isinstance(res.confidence, (int, float)) else -1.0
+				if conf > best_conf and res.text:
+				    best_conf = conf
+                    best_text = res.text
+                    best_engine = eng
+			
             best_text   = ""
             best_conf   = -1.0
             for eng, res in ocr_results.items():
@@ -668,7 +677,11 @@ async def _process_session(
             ocr_json = json.dumps({
                 eng: {
                     "text": ocr_results_display.get(eng, ""),
-                    "confidence": round(ocr_results[eng].confidence, 4),
+                    "confidence": (
+					    round(ocr_results[eng].confidence, 4)
+						if isinstance(ocr_results[eng].confidence, (int, float))
+						else None
+					),
                 }
                 for eng in engines
                 if eng in ocr_results
@@ -818,7 +831,12 @@ async def debug_ocr(zip_file: UploadFile = File(...)):
         ocr_results = await asyncio.get_event_loop().run_in_executor(
             None, run_ocr_multi, image_bytes, ALL_ENGINES
         )
-        best = max(ocr_results.values(), key=lambda r: r.confidence, default=None)
+        best = max(
+		    ocr_results.values(),
+            key=lambda r: (float(r.confidence) if isinstance(r.confidence, (int, float)) else -1.0),
+            default=None,
+        )
+        
         best_text = best.text if best else ""
         sections_data, ref_info = [], {}
         if lang in contents.texts:
