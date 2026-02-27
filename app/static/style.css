@@ -638,7 +638,7 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 
 /* editor */
 .editor-layout { display: flex; min-height: calc(100vh - 176px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; }
-.topbar { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-bottom: 1rem; }
+.topbar { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-bottom: 1rem; padding-left: 20px; }
 .canvas-area { flex:1; overflow:auto; padding:1rem; background:#0d1528; }
 #editor-canvas { background:#fff; border-radius:8px; box-shadow: 0 8px 28px rgba(0,0,0,.35); }
 .sidebar { width:300px; background:#11192d; border-left:1px solid var(--border); display:flex; flex-direction:column; }
@@ -652,3 +652,22 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 .dot-google { background:#4285f4; }
 .dot-azure { background:#0078d4; }
 .dot-ocrspace { background:#ff6b35; }
+
+.editor-hint { margin-bottom: .8rem; color: var(--text-secondary); }
+.sidebar h4 { padding-left: 12px; padding-top: 12px; }
+#sidebar-form .form-row { align-items: center; justify-content: space-between; }
+#sidebar-form .form-row label { min-width: 100px; }
+#sidebar-form .form-row input,
+#sidebar-form .form-row select { flex: 1; min-width: 0; }
+#sf-bbox { font-family: var(--mono); background: #0d1427; }
+
+.progress-panel { margin: 12px 20px; max-width: 520px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--card); }
+.progress-panel-title { margin-bottom: 8px; color: var(--text-secondary); }
+
+.results-controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.result-thumb { width: 64px; height: 40px; object-fit: cover; border: 1px solid var(--border); border-radius: 6px; }
+.status-badge { padding: 2px 8px; border-radius: 999px; font-size: .76rem; font-weight: 600; }
+.status-pass { color: #89e7ac; background: rgba(72,187,120,.18); }
+.status-manual { color: #ffd48a; background: rgba(246,173,85,.2); }
+.review-actions { display: flex; gap: 6px; }
+.review-actions .btn { padding: 4px 8px; font-size: .76rem; }

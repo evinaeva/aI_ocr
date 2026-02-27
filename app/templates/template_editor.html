@@ -15,10 +15,20 @@
 
 <div class="topbar">
   <label>ZIP:</label><input type="file" id="zip-input" accept=".zip">
-  <label>Section #:</label><input type="number" id="section-number" min="1" placeholder="optional">
-  <label>Section:</label><input type="text" id="section-name" placeholder="optional">
-  <button class="btn btn-primary" id="btn-parse">Continue / Parse</button>
-  <button class="btn btn-primary" id="btn-check" disabled>Check ZIP</button>
+  <label>Номер секции:</label><input type="number" id="section-number" min="1" placeholder="7">
+  <label>Название секции:</label><input type="text" id="section-name" placeholder="Banner">
+  <button class="btn btn-primary" id="btn-parse">Загрузить архив</button>
+  <button class="btn btn-primary" id="btn-check" disabled>Проверить локализацию</button>
+  <button class="btn btn-primary" id="btn-finish-top" disabled>Завершить</button>
+</div>
+
+<div id="progress-block" class="progress-panel" style="display:none;">
+  <div class="progress-panel-title">Проверка локализации</div>
+  <div class="progress-bar-wrap"><div id="progress-bar" class="progress-bar"></div></div>
+  <div class="progress-meta">
+    <span id="progress-count">0 / 0</span>
+    <span id="progress-percent">0%</span>
+  </div>
 </div>
 
 <!-- Status + Errors -->
@@ -41,6 +51,7 @@
     <div id="targets-list" class="zones-list"></div>
   </div>
   <div class="canvas-area">
+    <p class="editor-hint">Выделите мышкой зоны с лого/текстом</p>
     <canvas id="editor-canvas" width="800" height="500"></canvas>
     <div id="target-msg" class="canvas-msg"></div>
   </div>
@@ -58,7 +69,18 @@
 </div>
 
 <section class="results-section" id="results-section" style="display:none; margin:20px;">
+  <div class="results-controls">
+    <label><input type="checkbox" id="hide-pass"> Hide PASS</label>
+    <button class="btn btn-primary" id="btn-finish-bottom" disabled>Завершить</button>
+  </div>
   <table class="results-table"><thead><tr><th>img</th><th>gv</th><th>azure</th><th>ocr.space</th><th>reference</th><th>status</th><th>review</th></tr></thead><tbody id="results-body"></tbody></table>
+</section>
+
+<section id="final-errors" class="results-section" style="display:none; margin:20px;">
+  <div class="results-controls">
+    <strong>ERROR files</strong>
+    <button class="btn btn-secondary btn-sm" id="btn-expand-results">Развернуть результаты</button>
+  </div>
   <pre id="error-paths" style="margin-top:12px;"></pre>
 </section>
 
