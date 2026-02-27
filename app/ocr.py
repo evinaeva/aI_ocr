@@ -18,7 +18,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 ALL_ENGINES = ["google", "azure", "ocrspace"]
-DEFAULT_AZURE_OCR_API_VERSION = "2023-02-01-preview"
+DEFAULT_AZURE_OCR_API_VERSION = "2024-02-01"
 
 _GOOGLE_CACHE_LOCK = threading.Lock()
 # Maps id(image_bytes) -> OCRResult for pre-computed Google results.
@@ -107,7 +107,7 @@ def _parse_google_full_text(full_text_annotation):
         for block in page.blocks:
             if block.confidence:
                 confidences.append(block.confidence)
-    avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
+    avg_conf = sum(confidences) / len(confidences) if confidences else None
     return (full_text_annotation.text.strip(), avg_conf)
 
 
@@ -119,11 +119,11 @@ def _parse_google_text_annotations(response) -> Optional[tuple]:
     text = ((getattr(first, "description", "") or "").strip() if first else "")
     if not text:
         return None
-    return (text, 0.5)
+    return (text, None)
 
 def _google_feature_for_mode(vision, google_mode: Optional[str]):
     mode = (google_mode or "text").strip().lower()
-    if mode == "document":
+    if mode in ("document", "document_text_detection"):
         return vision.Feature.Type.DOCUMENT_TEXT_DETECTION
     return vision.Feature.Type.TEXT_DETECTION
 
@@ -155,14 +155,14 @@ def _ocr_google(image_bytes: bytes, google_mode: Optional[str] = None) -> Option
         client = vision.ImageAnnotatorClient()
         image = vision.Image(content=image_bytes)
         mode = (google_mode or "text").strip().lower()
-        if mode == "document":
+        if mode in ("document", "document_text_detection"):
             response = client.document_text_detection(image=image)
         else:
             response = client.text_detection(image=image)
         if response.error.message:
             logger.warning("Google Vision error: %s", response.error.message)
             return None
-        if mode == "document":
+        if mode in ("document", "document_text_detection"):
             full = response.full_text_annotation
             if not full or not full.text:
                 return None
@@ -238,7 +238,7 @@ def google_batch_annotate_images(image_bytes_list: list, google_mode: Optional[s
                     results.append(OCRResult("", 0.0, "google"))
                     continue
                 mode = (google_mode or "text").strip().lower()
-                if mode == "document":
+                if mode in ("document", "document_text_detection"):
                     full = resp.full_text_annotation
                     if not full or not full.text:
                         results.append(OCRResult("", 0.0, "google"))
@@ -297,7 +297,7 @@ def _ocr_azure(image_bytes: bytes) -> Optional[tuple]:
         if not lines_text:
             return None
         text = "\n".join(lines_text).strip()
-        avg_conf = sum(confidences) / len(confidences) if confidences else 0.5
+        avg_conf = sum(confidences) / len(confidences) if confidences else None
         return (text, avg_conf)
     except Exception as exc:
         logger.warning("Azure OCR exception: %s", exc)
@@ -308,9 +308,9 @@ def _ocr_azure(image_bytes: bytes) -> Optional[tuple]:
 
 def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple]:
     """
-    OCR.Space Engine 3 — confidence is a fixed approximation
-    (OCR.Space API does not return word-level confidence).
-    exit_code 1 = success → 0.75, exit_code 2 = partial → 0.50.
+    OCR.Space Engine 3.
+    OCR.Space API does not provide stable word-level confidence in this flow,
+    so confidence is returned as None to avoid synthetic values.
     """
     api_key = os.getenv("OCR_SPACE_API_KEY", "").strip()
     if not api_key:
@@ -353,8 +353,7 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple]:
         text = parsed[0].get("ParsedText", "").strip()
         if not text:
             return None
-        confidence = 0.75 if exit_code == 1 else 0.50
-        return (text, confidence)
+        return (text, None)
     except Exception as exc:
         logger.warning("OCR.Space exception: %s", exc)
         return None

@@ -22,13 +22,17 @@ Google-batch-v2 (additive):
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import logging
+import os
 import uuid
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
+import cv2
+import numpy as np
 
 from app.logging_utils import log_event
 from app.pipeline import template_store
@@ -97,8 +101,55 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     buf.seek(0)
     cropped.close()
     img.close()
-    return buf.getvalue()
+    return _guard_png_size(buf.getvalue())
 
+
+
+
+def _guard_png_size(payload: bytes) -> bytes:
+    """Deterministic payload-size guard for OCR requests."""
+    max_bytes_raw = os.getenv("OCR_MAX_PAYLOAD_BYTES", "4194304").strip()
+    max_bytes = int(max_bytes_raw) if max_bytes_raw.isdigit() else 4194304
+    if len(payload) <= max_bytes:
+        return payload
+
+    img = Image.open(io.BytesIO(payload))
+    try:
+        while len(payload) > max_bytes and img.width > 64 and img.height > 64:
+            new_w = max(64, int(round(img.width * 0.9)))
+            new_h = max(64, int(round(img.height * 0.9)))
+            img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            payload = buf.getvalue()
+    finally:
+        img.close()
+    return payload
+
+
+def _logo_template_match(zone_bytes: bytes, zone: ZoneDef) -> dict:
+    """Run OpenCV template matching for logo zones. Never calls OCR."""
+    cfg = zone.engine_config or {}
+    tpl_b64 = (cfg.get("logo_template_base64") or "").strip()
+    if not tpl_b64:
+        return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": "MANUAL", "reason": "logo_template_missing"}
+
+    try:
+        tpl_bytes = base64.b64decode(tpl_b64)
+        zone_arr = np.frombuffer(zone_bytes, dtype=np.uint8)
+        tpl_arr = np.frombuffer(tpl_bytes, dtype=np.uint8)
+        zone_img = cv2.imdecode(zone_arr, cv2.IMREAD_GRAYSCALE)
+        tpl_img = cv2.imdecode(tpl_arr, cv2.IMREAD_GRAYSCALE)
+        if zone_img is None or tpl_img is None:
+            return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": "MANUAL", "reason": "logo_decode_failed"}
+        if zone_img.shape[0] < tpl_img.shape[0] or zone_img.shape[1] < tpl_img.shape[1]:
+            return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": "MANUAL", "reason": "logo_template_larger_than_zone"}
+        res = cv2.matchTemplate(zone_img, tpl_img, cv2.TM_CCOEFF_NORMED)
+        score = float(cv2.minMaxLoc(res)[1])
+        status = "OK" if score >= float(cfg.get("logo_match_threshold", 0.8)) else "MANUAL"
+        return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": status, "reason": None if status == "OK" else "logo_mismatch"}
+    except Exception:
+        return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": "MANUAL", "reason": "logo_match_exception"}
 
 def _prefetch_google_batch(
     image_bytes: bytes,
@@ -119,7 +170,7 @@ def _prefetch_google_batch(
     google_jobs_by_mode = {}
 
     for i, zone in enumerate(zones):
-        if "google" not in zone.engines:
+        if zone.type == "logo" or "google" not in zone.engines:
             continue
         try:
             zb = _crop_zone(image_bytes, zone, source_size)
@@ -240,14 +291,18 @@ async def run_template(
                 except Exception:
                     zone_bytes = image_bytes
 
-            engine_results = await asyncio.to_thread(
-                dispatch_zone_ocr, zone, zone_bytes
-            )
+            if zone.type == "logo":
+                engine_results = []
+                consensus = _logo_template_match(zone_bytes, zone)
+            else:
+                engine_results = await asyncio.to_thread(
+                    dispatch_zone_ocr, zone, zone_bytes
+                )
 
-            consensus = resolve_consensus(
-                engine_results=engine_results,
-                engines_configured=True,
-            )
+                consensus = resolve_consensus(
+                    engine_results=engine_results,
+                    engines_configured=True,
+                )
 
             selected_text = consensus.get("selected_text") or ""
 
