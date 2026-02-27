@@ -16,27 +16,83 @@
     selected: -1,
   };
 
+  function setStatus(step, text) {
+    const box = document.getElementById('status-box');
+    if (!box) return;
+    document.getElementById('status-step').textContent = step || '';
+    document.getElementById('status-text').textContent = text || '';
+    box.style.display = (step || text) ? 'block' : 'none';
+  }
+
+  function showError(step, details) {
+    const box = document.getElementById('error-box');
+    if (!box) return;
+    const lines = [];
+    if (step) lines.push("[" + step + "]");
+    if (details) lines.push(details);
+    document.getElementById('error-text').textContent = lines.join('\n');
+    box.style.display = 'block';
+  }
+
+  function clearError() {
+    const box = document.getElementById('error-box');
+    if (!box) return;
+    box.style.display = 'none';
+    document.getElementById('error-text').textContent = '';
+  }
+
   function zones() { return state.zonesByTarget[state.currentTarget] || []; }
   function ensureTarget(targetId) { state.zonesByTarget[targetId] = state.zonesByTarget[targetId] || []; }
 
   $('btn-parse').addEventListener('click', parseZip);
   $('btn-check').addEventListener('click', startCheck);
+  $('btn-clear-error').addEventListener('click', clearError);
 
   async function parseZip() {
-    const f = $('zip-input').files[0];
-    if (!f) return;
+    clearError();
+    const f = document.getElementById('zip-input').files[0];
+
+    if (!f) {
+      setStatus("Parse ZIP", "FAILED");
+      showError("parseZip", "ZIP file is not selected");
+      return;
+    }
+
+    setStatus("Parse ZIP", "Uploading...");
+
     const fd = new FormData();
     fd.append('zip_file', f);
     if ($('section-number').value) fd.append('section_number', $('section-number').value);
     if ($('section-name').value) fd.append('section_name', $('section-name').value);
-    const resp = await fetch('/api/phase2/manifest', { method: 'POST', body: fd });
-    const data = await resp.json();
-    if (!resp.ok) return alert(data.error || 'parse failed');
-    state.uploadId = data.upload_id;
-    state.targets = data.targets || [];
-    renderTargets();
-    const hasRunnable = state.targets.some(t => t.en_available);
-    $('btn-check').disabled = !hasRunnable;
+
+    try {
+      const resp = await fetch('/api/phase2/manifest', {
+        method: 'POST',
+        body: fd
+      });
+
+      const text = await resp.text();
+
+      if (!resp.ok) {
+        setStatus("Parse ZIP", "FAILED");
+        showError("parseZip", "HTTP " + resp.status + "\n" + text.slice(0, 1000));
+        return;
+      }
+
+      const data = JSON.parse(text);
+
+      state.uploadId = data.upload_id;
+      state.targets = data.targets || [];
+      renderTargets();
+
+      const hasRunnable = state.targets.some(t => t.en_available);
+      document.getElementById('btn-check').disabled = !hasRunnable;
+
+      setStatus("Parse ZIP", "OK");
+    } catch (e) {
+      setStatus("Parse ZIP", "FAILED");
+      showError("parseZip", String(e));
+    }
   }
 
   function renderTargets() {
@@ -144,18 +200,54 @@
   $('btn-delete-zone').addEventListener('click', () => { if (state.selected < 0) return; zones().splice(state.selected, 1); state.selected = -1; renderZones(); draw(); });
 
   async function startCheck() {
-    if (!state.uploadId) return;
+    clearError();
+
+    if (!state.uploadId) {
+      showError("startCheck", "No uploadId. Press Continue/Parse first.");
+      return;
+    }
+
     const active = state.targets.find(t => t.target_id === state.currentTarget);
-    if (active && !active.en_available) return alert('en не найден');
-    const resp = await fetch(`/api/phase2/run/${encodeURIComponent(state.uploadId)}`, { method: 'POST' });
-    const data = await resp.json();
-    if (!resp.ok) return alert(data.error || 'start failed');
-    state.sessionId = data.session_id;
-    subscribeSSE();
+    if (active && !active.en_available) {
+      setStatus("Run Check", "FAILED");
+      showError("startCheck", "en не найден");
+      return;
+    }
+
+    setStatus("Run Check", "Starting...");
+
+    try {
+      const resp = await fetch(`/api/phase2/run/${encodeURIComponent(state.uploadId)}`, {
+        method: 'POST'
+      });
+
+      const text = await resp.text();
+
+      if (!resp.ok) {
+        setStatus("Run Check", "FAILED");
+        showError("startCheck", "HTTP " + resp.status + "\n" + text.slice(0, 1000));
+        return;
+      }
+
+      const data = JSON.parse(text);
+
+      state.sessionId = data.session_id;
+      setStatus("Run Check", "Session started. Waiting for SSE...");
+      subscribeSSE();
+
+    } catch (e) {
+      setStatus("Run Check", "FAILED");
+      showError("startCheck", String(e));
+    }
   }
 
   function subscribeSSE() {
     const es = new EventSource(`/api/progress/${state.sessionId}`);
+
+    es.onerror = function () {
+      showError("SSE", "EventSource connection error.");
+    };
+
     es.onmessage = async (ev) => {
       const m = JSON.parse(ev.data);
       if (m.event === 'done') {
@@ -176,27 +268,52 @@
   }
 
   async function loadResults() {
-    const resp = await fetch(`/api/results/${state.sessionId}?per_page=200`);
-    const data = await resp.json();
-    $('results-section').style.display = 'block';
-    const tbody = $('results-body');
-    tbody.innerHTML = '';
-    for (const row of (data.results || [])) {
-      const tr = document.createElement('tr');
-      const lang = (row.lang || '').toLowerCase();
-      const rtl = isRtl(lang) ? 'rtl' : 'ltr';
-      const st = row.status === 'PASS' ? 'PASS' : 'MANUAL';
-      tr.innerHTML = `
-        <td>${esc(row.image_name || '')}</td>
-        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}</td>
-        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}</td>
-        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}</td>
-        <td dir='${rtl}'>${esc(row.ref_text || '')}</td>
-        <td>${st}</td>
-        <td>${reviewHtml(row, st)}</td>`;
-      tbody.appendChild(tr);
+    clearError();
+    setStatus("Results", "loading...");
+
+    try {
+      const resp = await fetch(`/api/results/${state.sessionId}?per_page=200`);
+      const text = await resp.text();
+
+      if (!resp.ok) {
+        setStatus("Results", "FAILED");
+        showError("loadResults", "HTTP " + resp.status + "\n" + text.slice(0, 1000));
+        return;
+      }
+
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        setStatus("Results", "FAILED");
+        showError("loadResults", "JSON parse error " + String(e) + "\n" + text.slice(0, 1000));
+        return;
+      }
+
+      $('results-section').style.display = 'block';
+      const tbody = $('results-body');
+      tbody.innerHTML = '';
+      for (const row of (data.results || [])) {
+        const tr = document.createElement('tr');
+        const lang = (row.lang || '').toLowerCase();
+        const rtl = isRtl(lang) ? 'rtl' : 'ltr';
+        const st = row.status === 'PASS' ? 'PASS' : 'MANUAL';
+        tr.innerHTML = `
+          <td>${esc(row.image_name || '')}</td>
+          <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}</td>
+          <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}</td>
+          <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}</td>
+          <td dir='${rtl}'>${esc(row.ref_text || '')}</td>
+          <td>${st}</td>
+          <td>${reviewHtml(row, st)}</td>`;
+        tbody.appendChild(tr);
+      }
+      bindReviewButtons();
+      setStatus("Results", "OK");
+    } catch (e) {
+      setStatus("Results", "FAILED");
+      showError("loadResults", String(e));
     }
-    bindReviewButtons();
   }
 
   function reviewHtml(row, st) {

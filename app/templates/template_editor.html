@@ -21,6 +21,20 @@
   <button class="btn btn-primary" id="btn-check" disabled>Check ZIP</button>
 </div>
 
+<!-- Status + Errors -->
+<div id="status-box" style="display:none; margin:10px 20px;">
+  <strong id="status-step"></strong>
+  <span id="status-text" style="margin-left:8px;"></span>
+</div>
+
+<div id="error-box" style="display:none; margin:10px 20px; border:1px solid #dc2626; padding:10px;">
+  <div style="display:flex; justify-content:space-between;">
+    <strong>Ошибка</strong>
+    <button id="btn-clear-error" type="button">Clear</button>
+  </div>
+  <pre id="error-text" style="white-space:pre-wrap; margin-top:8px;"></pre>
+</div>
+
 <div class="editor-layout">
   <div class="sidebar">
     <h4>Targets</h4>
