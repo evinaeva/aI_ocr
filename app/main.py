@@ -266,7 +266,7 @@ def _push_event(session_id: str, event: dict):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    return RedirectResponse(url="/templates/editor", status_code=302)
 
 
 @app.get("/login", response_class=HTMLResponse)
