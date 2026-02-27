@@ -122,6 +122,85 @@ class ZipContents:
     text_names: Dict[str, str] = field(default_factory=dict)
 
 
+@dataclass
+class ZipManifestItem:
+    archive_path: str
+    lang: Optional[str]
+    target_id: str
+
+
+@dataclass
+class ZipTargetManifest:
+    target_id: str
+    has_en: bool
+    items: list[ZipManifestItem] = field(default_factory=list)
+
+
+def _iter_image_archive_paths(zf: zipfile.ZipFile, *, prefix: str = "") -> list[str]:
+    out: list[str] = []
+    for info in zf.infolist():
+        if info.filename.endswith("/"):
+            continue
+        lower = info.filename.lower()
+        if lower.endswith(".zip"):
+            try:
+                nested = zipfile.ZipFile(io.BytesIO(zf.read(info)))
+            except zipfile.BadZipFile:
+                continue
+            with nested:
+                out.extend(_iter_image_archive_paths(nested, prefix=f"{prefix}{info.filename}!/"))
+            continue
+
+        ext = ("." + info.filename.rsplit(".", 1)[-1].lower()) if "." in info.filename else ""
+        if ext in _IMAGE_EXT:
+            out.append(f"{prefix}{info.filename}")
+    return out
+
+
+def _is_target_segment(segment: str) -> bool:
+    s = (segment or "").strip().lower()
+    return bool(re.match(r"^\d+$", s) or re.match(r"^\d+x\d+$", s))
+
+def _infer_target_id(path: str, grouped: bool) -> str:
+    clean = path.split("!/", 1)[-1]
+    parts = [p for p in clean.split("/") if p]
+    if grouped and len(parts) >= 2 and _is_target_segment(parts[0]):
+        return parts[0]
+    return "default"
+
+
+def build_zip_manifest(zip_bytes: bytes) -> list[ZipTargetManifest]:
+    """
+    Build backend ZIP manifest grouped by target_id.
+
+    Keeps per-file archive_path verbatim, extracted lang and deterministic target_id,
+    and exposes EN presence per target.
+    """
+    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+        paths = _iter_image_archive_paths(zf)
+
+    grouped = False
+    for path in paths:
+        clean = path.split("!/", 1)[-1]
+        parts = [p for p in clean.split("/") if p]
+        if len(parts) >= 2 and _is_target_segment(parts[0]):
+            grouped = True
+            break
+    targets: dict[str, ZipTargetManifest] = {}
+
+    for path in sorted(paths):
+        basename = path.split("!/", 1)[-1].rsplit("/", 1)[-1]
+        lang = extract_lang_code(basename)
+        target_id = _infer_target_id(path, grouped)
+        target = targets.setdefault(target_id, ZipTargetManifest(target_id=target_id, has_en=False))
+        item = ZipManifestItem(archive_path=path, lang=lang, target_id=target_id)
+        target.items.append(item)
+        if lang == "en":
+            target.has_en = True
+
+    return [targets[k] for k in sorted(targets.keys())]
+
+
 def _is_images_zip(zf: zipfile.ZipFile) -> bool:
     return any(
         not i.filename.endswith("/") and

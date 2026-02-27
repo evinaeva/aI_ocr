@@ -39,6 +39,9 @@ def _make_resp(text="HELLO", confidence=0.9, error_msg=""):
     resp = MagicMock()
     resp.error.message = error_msg
     resp.full_text_annotation = _make_full_text(text, confidence)
+    ta = MagicMock()
+    ta.description = text
+    resp.text_annotations = [ta]
     return resp
 
 
@@ -76,6 +79,7 @@ class _VisionPatch:
         fake_vision.Image = MagicMock(side_effect=lambda content: MagicMock())
         fake_vision.AnnotateImageRequest = MagicMock(side_effect=lambda **kw: MagicMock())
         feature_type = MagicMock()
+        feature_type.TEXT_DETECTION = "TD"
         feature_type.DOCUMENT_TEXT_DETECTION = "DTD"
         fake_feature = MagicMock()
         fake_feature.Type = feature_type
@@ -265,7 +269,7 @@ class TestGoogleCacheInjection(unittest.TestCase):
 class TestSingleImageCacheMiss(unittest.TestCase):
 
     def test_no_cache_calls_single_image_api(self):
-        """With no cached result, _ocr_google uses single-image document_text_detection."""
+        """With no cached result, _ocr_google uses single-image text_detection."""
         import app.ocr as ocr_mod
         from app.ocr import _google_cache_clear
 
@@ -275,15 +279,68 @@ class TestSingleImageCacheMiss(unittest.TestCase):
         mock_client = MagicMock()
         resp = MagicMock()
         resp.error.message = ""
-        resp.full_text_annotation = _make_full_text("DIRECT", 0.85)
-        mock_client.document_text_detection.return_value = resp
+        resp.text_annotations = [MagicMock(description="DIRECT")]
+        mock_client.text_detection.return_value = resp
 
         with _VisionPatch(mock_client):
             result = ocr_mod._ocr_google(fake_bytes)
 
-        mock_client.document_text_detection.assert_called_once()
+        mock_client.text_detection.assert_called_once()
         self.assertIsNotNone(result)
         self.assertEqual(result[0], "DIRECT")
+
+    def test_document_mode_calls_document_text_detection(self):
+        import app.ocr as ocr_mod
+        from app.ocr import _google_cache_clear
+
+        fake_bytes = b"doc_mode_unique_10000"
+        _google_cache_clear([id(fake_bytes)])
+
+        mock_client = MagicMock()
+        resp = MagicMock()
+        resp.error.message = ""
+        resp.full_text_annotation = _make_full_text("DOC", 0.91)
+        mock_client.document_text_detection.return_value = resp
+
+        with _VisionPatch(mock_client):
+            result = ocr_mod._ocr_google(fake_bytes, "document")
+
+        mock_client.document_text_detection.assert_called_once()
+        self.assertIsNotNone(result)
+        self.assertEqual(result[0], "DOC")
+
+
+class TestGoogleBatchModes(unittest.TestCase):
+
+    def test_batch_text_mode_uses_text_feature_and_text_annotations(self):
+        from app.ocr import google_batch_annotate_images
+
+        mock_client = MagicMock()
+        mock_client.batch_annotate_images.return_value = _make_batch_resp([_make_resp("TXT")])
+
+        with _VisionPatch(mock_client) as fake_vision:
+            results = google_batch_annotate_images([b"img"], google_mode="text")
+            reqs = mock_client.batch_annotate_images.call_args.kwargs["requests"]
+            self.assertEqual(len(reqs), 1)
+            feature_arg = fake_vision.Feature.call_args.kwargs["type_"]
+            self.assertEqual(feature_arg, fake_vision.Feature.Type.TEXT_DETECTION)
+
+        self.assertEqual(results[0].text, "TXT")
+
+    def test_batch_document_mode_uses_document_feature_and_full_text(self):
+        from app.ocr import google_batch_annotate_images
+
+        mock_client = MagicMock()
+        mock_client.batch_annotate_images.return_value = _make_batch_resp([_make_resp("DOC")])
+
+        with _VisionPatch(mock_client) as fake_vision:
+            results = google_batch_annotate_images([b"img"], google_mode="document")
+            reqs = mock_client.batch_annotate_images.call_args.kwargs["requests"]
+            self.assertEqual(len(reqs), 1)
+            feature_arg = fake_vision.Feature.call_args.kwargs["type_"]
+            self.assertEqual(feature_arg, fake_vision.Feature.Type.DOCUMENT_TEXT_DETECTION)
+
+        self.assertEqual(results[0].text, "DOC")
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +364,8 @@ class TestNonGoogleEnginesUnaffected(unittest.TestCase):
     def test_run_ocr_multi_azure_path_unchanged(self):
         """run_ocr_multi for azure calls _ocr_azure directly, not batch."""
         from app.ocr import run_ocr_multi
-        with patch("app.ocr._ocr_azure", return_value=("AZURE_TEXT", 0.8)) as mock_azure:
+        mock_azure = MagicMock(return_value=("AZURE_TEXT", 0.8))
+        with patch.dict("app.ocr._ENGINE_FNS", {"azure": mock_azure}, clear=False):
             result = run_ocr_multi(b"img", ["azure"])
         mock_azure.assert_called_once_with(b"img")
         self.assertIn("azure", result)
@@ -316,7 +374,8 @@ class TestNonGoogleEnginesUnaffected(unittest.TestCase):
     def test_run_ocr_multi_ocrspace_path_unchanged(self):
         """run_ocr_multi for ocrspace calls _ocr_ocrspace directly."""
         from app.ocr import run_ocr_multi
-        with patch("app.ocr._ocr_ocrspace", return_value=("SPACE_TEXT", 0.75)) as mock_space:
+        mock_space = MagicMock(return_value=("SPACE_TEXT", 0.75))
+        with patch.dict("app.ocr._ENGINE_FNS", {"ocrspace": mock_space}, clear=False):
             result = run_ocr_multi(b"img", ["ocrspace"])
         mock_space.assert_called_once_with(b"img")
         self.assertIn("ocrspace", result)

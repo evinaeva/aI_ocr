@@ -13,6 +13,7 @@ Contract:
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import List
 
@@ -26,6 +27,30 @@ except ImportError:  # pragma: no cover — only missing in minimal test envs
     run_ocr_multi = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+
+def _measure_payload(engine_name: str, image_bytes: bytes) -> bytes:
+    payload_size = len(image_bytes)
+    threshold_raw = os.getenv(f"OCR_MAX_PAYLOAD_BYTES_{engine_name.upper()}", "").strip()
+    threshold = int(threshold_raw) if threshold_raw.isdigit() else None
+
+    if threshold is not None and payload_size > threshold:
+        logger.warning(
+            '{"event":"ocr_payload_too_large","engine":"%s","payload_bytes":%d,'
+            '"threshold_bytes":%d,"fallback":"not_applied"}',
+            engine_name,
+            payload_size,
+            threshold,
+        )
+    else:
+        logger.info(
+            '{"event":"ocr_payload_measured","engine":"%s","payload_bytes":%d,"threshold_bytes":%s}',
+            engine_name,
+            payload_size,
+            "null" if threshold is None else str(threshold),
+        )
+
+    return image_bytes
 
 
 class ZoneEngineResult:
@@ -78,7 +103,8 @@ def dispatch_zone_ocr(
             if run_ocr_multi is None:
                 raise RuntimeError("run_ocr_multi not available")
 
-            ocr_map = run_ocr_multi(image_bytes, [engine_name])
+            measured_bytes = _measure_payload(engine_name, image_bytes)
+            ocr_map = run_ocr_multi(measured_bytes, [engine_name], zone.engine_config)
             elapsed = (time.monotonic() - t0) * 1000.0
 
             if engine_name in ocr_map:
