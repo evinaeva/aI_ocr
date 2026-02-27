@@ -23,8 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import io
-import uuid
 import logging
+import uuid
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
@@ -50,19 +50,14 @@ logger = logging.getLogger(__name__)
 
 def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     """
-<<<<<<< ue6vnm-codex/implement-phase-1-changes-for-ocr-subsystem
     Crop image to zone bbox, scaling bbox from template source_size
     to current image dimensions (after optional whole-image upscale).
-=======
-    Crop image to zone bbox in template pixel coordinates.
-    If crop is smaller than 1024x768, upscale with Lanczos before OCR.
->>>>>>> main
     Returns PNG bytes.
     """
     img = Image.open(io.BytesIO(image_bytes))
     img_w, img_h = img.size
-<<<<<<< ue6vnm-codex/implement-phase-1-changes-for-ocr-subsystem
 
+    # 1) Whole-image upscale BEFORE crop (per spec).
     if img_w < 1024 or img_h < 768:
         scale = max(1024 / max(1, img_w), 768 / max(1, img_h))
         new_w = max(1, int(round(img_w * scale)))
@@ -70,17 +65,25 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
         img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         img_w, img_h = img.size
 
-    src_w, src_h = source_size[0], source_size[1]
+    # 2) Scale bbox from template reference space (source_size) → current img px.
+    # Defensive guards: avoid crashes on malformed source_size.
+    try:
+        src_w = int(source_size[0])
+        src_h = int(source_size[1])
+    except Exception:
+        src_w, src_h = img_w, img_h
+
+    src_w = max(1, src_w)
+    src_h = max(1, src_h)
+
     scale_x = img_w / src_w
     scale_y = img_h / src_h
-=======
->>>>>>> main
 
     x1, y1, x2, y2 = zone.bbox
-    px1 = int(x1)
-    py1 = int(y1)
-    px2 = int(x2)
-    py2 = int(y2)
+    px1 = int(x1 * scale_x)
+    py1 = int(y1 * scale_y)
+    px2 = int(x2 * scale_x)
+    py2 = int(y2 * scale_y)
 
     px1 = max(0, min(px1, img_w))
     py1 = max(0, min(py1, img_h))
@@ -88,14 +91,6 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     py2 = max(0, min(py2, img_h))
 
     cropped = img.crop((px1, py1, px2, py2))
-<<<<<<< ue6vnm-codex/implement-phase-1-changes-for-ocr-subsystem
-=======
-    if cropped.width < 1024 or cropped.height < 768:
-        scale = max(1024 / max(1, cropped.width), 768 / max(1, cropped.height))
-        new_w = max(1, int(round(cropped.width * scale)))
-        new_h = max(1, int(round(cropped.height * scale)))
-        cropped = cropped.resize((new_w, new_h), Image.Resampling.LANCZOS)
->>>>>>> main
 
     buf = io.BytesIO()
     cropped.save(buf, format="PNG")
@@ -130,6 +125,7 @@ def _prefetch_google_batch(
             zb = _crop_zone(image_bytes, zone, source_size)
         except Exception:
             zb = image_bytes
+
         google_mode = (zone.engine_config or {}).get("google_mode")
         mode_key = (google_mode or "text").strip().lower()
         google_jobs_by_mode.setdefault(mode_key, []).append((i, zb))
@@ -138,7 +134,6 @@ def _prefetch_google_batch(
         return {}
 
     zone_bytes_map = {}
-
     from app.ocr import OCRResult
 
     for google_mode, jobs in google_jobs_by_mode.items():
@@ -148,17 +143,10 @@ def _prefetch_google_batch(
         except Exception:
             logger.warning("google_batch_prefetch_failed mode=%s", google_mode)
             continue
-<<<<<<< ue6vnm-codex/implement-phase-1-changes-for-ocr-subsystem
 
         while len(batch_results) < len(jobs):
             batch_results.append(OCRResult("", 0.0, "google"))
 
-=======
-
-        while len(batch_results) < len(jobs):
-            batch_results.append(OCRResult("", 0.0, "google"))
-
->>>>>>> main
         for (zone_idx, zb), result in zip(jobs, batch_results):
             _google_cache_put(zb, result)
             zone_bytes_map[zone_idx] = zb
@@ -248,9 +236,7 @@ async def run_template(
                 zone_bytes = batched_zone_bytes[i]
             else:
                 try:
-                    zone_bytes = _crop_zone(
-                        image_bytes, zone, tmpl.source_size
-                    )
+                    zone_bytes = _crop_zone(image_bytes, zone, tmpl.source_size)
                 except Exception:
                     zone_bytes = image_bytes
 
@@ -347,6 +333,4 @@ async def run_template(
 
     finally:
         if batched_zone_bytes:
-            _google_cache_clear(
-                [id(zb) for zb in batched_zone_bytes.values()]
-            )
+            _google_cache_clear([id(zb) for zb in batched_zone_bytes.values()])
