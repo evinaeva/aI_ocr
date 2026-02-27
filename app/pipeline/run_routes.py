@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import io
 import uuid
+import logging
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
@@ -44,17 +45,26 @@ from app.ocr import (
 )
 
 run_router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     """
     Crop image to zone bbox, scaling bbox from template source_size
-    to actual image pixel dimensions. Returns PNG bytes.
+    to current image dimensions (after optional whole-image upscale).
+    Returns PNG bytes.
     """
     img = Image.open(io.BytesIO(image_bytes))
     img_w, img_h = img.size
-    src_w, src_h = source_size[0], source_size[1]
 
+    if img_w < 1024 or img_h < 768:
+        scale = max(1024 / max(1, img_w), 768 / max(1, img_h))
+        new_w = max(1, int(round(img_w * scale)))
+        new_h = max(1, int(round(img_h * scale)))
+        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+        img_w, img_h = img.size
+
+    src_w, src_h = source_size[0], source_size[1]
     scale_x = img_w / src_w
     scale_y = img_h / src_h
 
@@ -70,6 +80,7 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     py2 = max(0, min(py2, img_h))
 
     cropped = img.crop((px1, py1, px2, py2))
+
     buf = io.BytesIO()
     cropped.save(buf, format="PNG")
     buf.seek(0)
@@ -94,7 +105,7 @@ def _prefetch_google_batch(
 
     Never raises.
     """
-    google_jobs = []
+    google_jobs_by_mode = {}
 
     for i, zone in enumerate(zones):
         if "google" not in zone.engines:
@@ -103,27 +114,31 @@ def _prefetch_google_batch(
             zb = _crop_zone(image_bytes, zone, source_size)
         except Exception:
             zb = image_bytes
-        google_jobs.append((i, zb))
+        google_mode = (zone.engine_config or {}).get("google_mode")
+        mode_key = (google_mode or "text").strip().lower()
+        google_jobs_by_mode.setdefault(mode_key, []).append((i, zb))
 
-    if not google_jobs:
+    if not google_jobs_by_mode:
         return {}
 
-    job_bytes = [zb for _, zb in google_jobs]
-
-    try:
-        batch_results = google_batch_annotate_images(job_bytes)
-    except Exception:
-        return {}
+    zone_bytes_map = {}
 
     from app.ocr import OCRResult
 
-    while len(batch_results) < len(google_jobs):
-        batch_results.append(OCRResult("", 0.0, "google"))
+    for google_mode, jobs in google_jobs_by_mode.items():
+        job_bytes = [zb for _, zb in jobs]
+        try:
+            batch_results = google_batch_annotate_images(job_bytes, google_mode=google_mode)
+        except Exception:
+            logger.warning("google_batch_prefetch_failed mode=%s", google_mode)
+            continue
 
-    zone_bytes_map = {}
-    for (zone_idx, zb), result in zip(google_jobs, batch_results):
-        _google_cache_put(zb, result)
-        zone_bytes_map[zone_idx] = zb
+        while len(batch_results) < len(jobs):
+            batch_results.append(OCRResult("", 0.0, "google"))
+
+        for (zone_idx, zb), result in zip(jobs, batch_results):
+            _google_cache_put(zb, result)
+            zone_bytes_map[zone_idx] = zb
 
     return zone_bytes_map
 

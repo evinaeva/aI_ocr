@@ -18,6 +18,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 ALL_ENGINES = ["google", "azure", "ocrspace"]
+DEFAULT_AZURE_OCR_API_VERSION = "2023-02-01-preview"
 
 _GOOGLE_CACHE_LOCK = threading.Lock()
 # Maps id(image_bytes) -> OCRResult for pre-computed Google results.
@@ -110,16 +111,33 @@ def _parse_google_full_text(full_text_annotation):
     return (full_text_annotation.text.strip(), avg_conf)
 
 
-def _build_google_annotate_request(image_bytes: bytes):
-    """Build a single AnnotateImageRequest for DOCUMENT_TEXT_DETECTION."""
+def _parse_google_text_annotations(response) -> Optional[tuple]:
+    anns = getattr(response, "text_annotations", None)
+    if not anns:
+        return None
+    first = anns[0] if len(anns) > 0 else None
+    text = ((getattr(first, "description", "") or "").strip() if first else "")
+    if not text:
+        return None
+    return (text, 0.5)
+
+def _google_feature_for_mode(vision, google_mode: Optional[str]):
+    mode = (google_mode or "text").strip().lower()
+    if mode == "document":
+        return vision.Feature.Type.DOCUMENT_TEXT_DETECTION
+    return vision.Feature.Type.TEXT_DETECTION
+
+
+def _build_google_annotate_request(image_bytes: bytes, google_mode: Optional[str] = None):
+    """Build a single AnnotateImageRequest for Google Vision mode."""
     from google.cloud import vision  # type: ignore
     return vision.AnnotateImageRequest(
         image=vision.Image(content=image_bytes),
-        features=[vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)],
+        features=[vision.Feature(type_=_google_feature_for_mode(vision, google_mode))],
     )
 
 
-def _ocr_google(image_bytes: bytes) -> Optional[tuple]:
+def _ocr_google(image_bytes: bytes, google_mode: Optional[str] = None) -> Optional[tuple]:
     """Return (text, confidence) or None on failure.
 
     If a pre-computed result has been injected via _google_cache_put, consume
@@ -136,22 +154,28 @@ def _ocr_google(image_bytes: bytes) -> Optional[tuple]:
         from google.cloud import vision  # type: ignore
         client = vision.ImageAnnotatorClient()
         image = vision.Image(content=image_bytes)
-        response = client.document_text_detection(image=image)
+        mode = (google_mode or "text").strip().lower()
+        if mode == "document":
+            response = client.document_text_detection(image=image)
+        else:
+            response = client.text_detection(image=image)
         if response.error.message:
             logger.warning("Google Vision error: %s", response.error.message)
             return None
-        full = response.full_text_annotation
-        if not full or not full.text:
-            return None
-        return _parse_google_full_text(full)
+        if mode == "document":
+            full = response.full_text_annotation
+            if not full or not full.text:
+                return None
+            return _parse_google_full_text(full)
+        return _parse_google_text_annotations(response)
     except Exception as exc:
         logger.warning("Google Vision exception: %s", exc)
         return None
 
 
-def google_batch_annotate_images(image_bytes_list: list) -> list:
+def google_batch_annotate_images(image_bytes_list: list, google_mode: Optional[str] = None) -> list:
     """
-    Batch Google Vision DOCUMENT_TEXT_DETECTION for up to 16 images per call.
+    Batch Google Vision (TEXT_DETECTION or DOCUMENT_TEXT_DETECTION) for up to 16 images per call.
 
     - Chunks input into groups of 16.
     - Preserves input order strictly.
@@ -188,7 +212,7 @@ def google_batch_annotate_images(image_bytes_list: list) -> list:
         requests = [
             vision.AnnotateImageRequest(
                 image=vision.Image(content=img),
-                features=[vision.Feature(type_=vision.Feature.Type.DOCUMENT_TEXT_DETECTION)],
+                features=[vision.Feature(type_=_google_feature_for_mode(vision, google_mode))],
             )
             for img in chunk
         ]
@@ -213,12 +237,21 @@ def google_batch_annotate_images(image_bytes_list: list) -> list:
                     )
                     results.append(OCRResult("", 0.0, "google"))
                     continue
-                full = resp.full_text_annotation
-                if not full or not full.text:
-                    results.append(OCRResult("", 0.0, "google"))
-                    continue
-                text, conf = _parse_google_full_text(full)
-                results.append(OCRResult(text, conf, "google"))
+                mode = (google_mode or "text").strip().lower()
+                if mode == "document":
+                    full = resp.full_text_annotation
+                    if not full or not full.text:
+                        results.append(OCRResult("", 0.0, "google"))
+                        continue
+                    text, conf = _parse_google_full_text(full)
+                    results.append(OCRResult(text, conf, "google"))
+                else:
+                    parsed = _parse_google_text_annotations(resp)
+                    if not parsed:
+                        results.append(OCRResult("", 0.0, "google"))
+                        continue
+                    text, conf = parsed
+                    results.append(OCRResult(text, conf, "google"))
         except Exception as exc:
             logger.warning(
                 "google_batch_v2 chunk_failed chunk_start=%d error=%s",
@@ -238,7 +271,13 @@ def _ocr_azure(image_bytes: bytes) -> Optional[tuple]:
     if not endpoint or not key:
         return None
     url = f"{endpoint}/computervision/imageanalysis:analyze"
-    params = {"features": "read", "api-version": "2023-02-01-preview"}
+    # Azure OCR target: Image Analysis 4.0 Read.
+    # Example stable api-version is 2024-02; exact value is environment-configurable
+    # for safe rollout/testing and defaults to legacy preview for backwards compatibility.
+    api_version = os.getenv("AZURE_OCR_API_VERSION", DEFAULT_AZURE_OCR_API_VERSION).strip()
+    if not api_version:
+        api_version = DEFAULT_AZURE_OCR_API_VERSION
+    params = {"features": "read", "api-version": api_version}
     headers = {"Ocp-Apim-Subscription-Key": key, "Content-Type": "application/octet-stream"}
     try:
         with httpx.Client(timeout=30) as client:
@@ -353,7 +392,7 @@ def run_ocr(image_bytes: bytes, engine: str = None) -> OCRResult:
     return OCRResult(text, conf, eng)
 
 
-def run_ocr_multi(image_bytes: bytes, engines: list) -> dict:
+def run_ocr_multi(image_bytes: bytes, engines: list, engine_config: Optional[dict] = None) -> dict:
     """
     Run each engine in `engines`, return dict {engine_name: OCRResult}.
     Missing / failed engines are not included in the result dict.
@@ -363,7 +402,11 @@ def run_ocr_multi(image_bytes: bytes, engines: list) -> dict:
         fn = _ENGINE_FNS.get(eng_name)
         if fn is None:
             continue
-        r = fn(image_bytes)
+        if eng_name == "google":
+            google_mode = (engine_config or {}).get("google_mode")
+            r = fn(image_bytes, google_mode)
+        else:
+            r = fn(image_bytes)
         if r:
             out[eng_name] = OCRResult(r[0], r[1], eng_name)
         else:
