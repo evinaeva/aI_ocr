@@ -14,31 +14,33 @@
     scale: 1,
     drawing: null,
     selected: -1,
+    currentResults: [],
+    unresolvedCount: 0,
   };
 
   function setStatus(step, text) {
-    const box = document.getElementById('status-box');
+    const box = $('status-box');
     if (!box) return;
-    document.getElementById('status-step').textContent = step || '';
-    document.getElementById('status-text').textContent = text || '';
+    $('status-step').textContent = step || '';
+    $('status-text').textContent = text || '';
     box.style.display = (step || text) ? 'block' : 'none';
   }
 
   function showError(step, details) {
-    const box = document.getElementById('error-box');
+    const box = $('error-box');
     if (!box) return;
     const lines = [];
-    if (step) lines.push("[" + step + "]");
+    if (step) lines.push('[' + step + ']');
     if (details) lines.push(details);
-    document.getElementById('error-text').textContent = lines.join('\n');
+    $('error-text').textContent = lines.join('\n');
     box.style.display = 'block';
   }
 
   function clearError() {
-    const box = document.getElementById('error-box');
+    const box = $('error-box');
     if (!box) return;
     box.style.display = 'none';
-    document.getElementById('error-text').textContent = '';
+    $('error-text').textContent = '';
   }
 
   function zones() { return state.zonesByTarget[state.currentTarget] || []; }
@@ -47,18 +49,27 @@
   $('btn-parse').addEventListener('click', parseZip);
   $('btn-check').addEventListener('click', startCheck);
   $('btn-clear-error').addEventListener('click', clearError);
+  $('hide-pass').addEventListener('change', () => {
+    if (!state.sessionId) return;
+    renderResultsTable();
+    updateErrorList();
+    updateFinishButtons();
+  });
+  $('btn-finish-top').addEventListener('click', finishReview);
+  $('btn-finish-bottom').addEventListener('click', finishReview);
+  $('btn-expand-results').addEventListener('click', expandResults);
 
   async function parseZip() {
     clearError();
-    const f = document.getElementById('zip-input').files[0];
+    const f = $('zip-input').files[0];
 
     if (!f) {
-      setStatus("Parse ZIP", "FAILED");
-      showError("parseZip", "ZIP file is not selected");
+      setStatus('Parse ZIP', 'FAILED');
+      showError('parseZip', 'ZIP file is not selected');
       return;
     }
 
-    setStatus("Parse ZIP", "Uploading...");
+    setStatus('Parse ZIP', 'Uploading...');
 
     const fd = new FormData();
     fd.append('zip_file', f);
@@ -66,32 +77,26 @@
     if ($('section-name').value) fd.append('section_name', $('section-name').value);
 
     try {
-      const resp = await fetch('/api/phase2/manifest', {
-        method: 'POST',
-        body: fd
-      });
-
+      const resp = await fetch('/api/phase2/manifest', { method: 'POST', body: fd });
       const text = await resp.text();
 
       if (!resp.ok) {
-        setStatus("Parse ZIP", "FAILED");
-        showError("parseZip", "HTTP " + resp.status + "\n" + text.slice(0, 1000));
+        setStatus('Parse ZIP', 'FAILED');
+        showError('parseZip', 'HTTP ' + resp.status + '\n' + text.slice(0, 1000));
         return;
       }
 
       const data = JSON.parse(text);
-
       state.uploadId = data.upload_id;
       state.targets = data.targets || [];
       renderTargets();
 
-      const hasRunnable = state.targets.some(t => t.en_available);
-      document.getElementById('btn-check').disabled = !hasRunnable;
-
-      setStatus("Parse ZIP", "OK");
+      const hasRunnable = state.targets.some((t) => t.en_available);
+      $('btn-check').disabled = !hasRunnable;
+      setStatus('Parse ZIP', 'OK');
     } catch (e) {
-      setStatus("Parse ZIP", "FAILED");
-      showError("parseZip", String(e));
+      setStatus('Parse ZIP', 'FAILED');
+      showError('parseZip', String(e));
     }
   }
 
@@ -102,7 +107,8 @@
       ensureTarget(t.target_id);
       const row = document.createElement('div');
       row.className = 'zone-row';
-      row.innerHTML = `<button class="btn btn-xs" data-target="${esc(t.target_id)}">${esc(t.target_id)}</button> ${t.en_available ? '' : '<span style="color:#dc2626">en не найден</span>'}`;
+      const title = t.preview_en_path ? t.preview_en_path.split('/').slice(-2, -1)[0] || t.target_id : t.target_id;
+      row.innerHTML = `<button class="btn btn-xs" data-target="${esc(t.target_id)}">${esc(title)}</button> ${t.en_available ? '' : '<span style="color:#dc2626">en не найден</span>'}`;
       row.querySelector('button').onclick = () => openTarget(t);
       el.appendChild(row);
     });
@@ -164,7 +170,7 @@
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (state.image) ctx.drawImage(state.image, 0, 0, canvas.width, canvas.height);
     zones().forEach((z, i) => {
-      const [x1, y1, x2, y2] = z.bbox.map(v => Math.round(v * state.scale));
+      const [x1, y1, x2, y2] = z.bbox.map((v) => Math.round(v * state.scale));
       ctx.strokeStyle = i === state.selected ? '#f59e0b' : '#2563eb';
       ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
     });
@@ -194,50 +200,73 @@
     $('google-mode-row').style.display = z.zone_type === 'text' ? 'block' : 'none';
   }
 
-  $('sf-name').addEventListener('input', () => { const z = zones()[state.selected]; if (!z) return; z.name = $('sf-name').value; renderZones(); });
-  $('sf-type').addEventListener('change', () => { const z = zones()[state.selected]; if (!z) return; z.zone_type = $('sf-type').value; syncForm(); renderZones(); });
-  $('sf-google-mode').addEventListener('change', () => { const z = zones()[state.selected]; if (!z) return; z.google_mode = $('sf-google-mode').value; });
-  $('btn-delete-zone').addEventListener('click', () => { if (state.selected < 0) return; zones().splice(state.selected, 1); state.selected = -1; renderZones(); draw(); });
+  $('sf-name').addEventListener('input', () => {
+    const z = zones()[state.selected];
+    if (!z) return;
+    z.name = $('sf-name').value;
+    renderZones();
+  });
+  $('sf-type').addEventListener('change', () => {
+    const z = zones()[state.selected];
+    if (!z) return;
+    z.zone_type = $('sf-type').value;
+    syncForm();
+    renderZones();
+  });
+  $('sf-google-mode').addEventListener('change', () => {
+    const z = zones()[state.selected];
+    if (!z) return;
+    z.google_mode = $('sf-google-mode').value;
+  });
+  $('btn-delete-zone').addEventListener('click', () => {
+    if (state.selected < 0) return;
+    zones().splice(state.selected, 1);
+    state.selected = -1;
+    renderZones();
+    draw();
+  });
 
   async function startCheck() {
     clearError();
 
     if (!state.uploadId) {
-      showError("startCheck", "No uploadId. Press Continue/Parse first.");
+      showError('startCheck', 'No uploadId. Press Загрузить архив first.');
       return;
     }
 
-    const active = state.targets.find(t => t.target_id === state.currentTarget);
+    const active = state.targets.find((t) => t.target_id === state.currentTarget);
     if (active && !active.en_available) {
-      setStatus("Run Check", "FAILED");
-      showError("startCheck", "en не найден");
+      setStatus('Run Check', 'FAILED');
+      showError('startCheck', 'en не найден');
       return;
     }
 
-    setStatus("Run Check", "Starting...");
+    setStatus('Run Check', 'Starting...');
+    $('editor-canvas').style.pointerEvents = 'none';
+    $('editor-canvas').style.opacity = '0.75';
+    $('progress-block').style.display = 'block';
+    document.querySelector('.editor-layout').style.display = 'none';
+    $('results-section').style.display = 'none';
+    $('final-errors').style.display = 'none';
+    setProgress(0, 0);
 
     try {
-      const resp = await fetch(`/api/phase2/run/${encodeURIComponent(state.uploadId)}`, {
-        method: 'POST'
-      });
-
+      const resp = await fetch(`/api/phase2/run/${encodeURIComponent(state.uploadId)}`, { method: 'POST' });
       const text = await resp.text();
 
       if (!resp.ok) {
-        setStatus("Run Check", "FAILED");
-        showError("startCheck", "HTTP " + resp.status + "\n" + text.slice(0, 1000));
+        setStatus('Run Check', 'FAILED');
+        showError('startCheck', 'HTTP ' + resp.status + '\n' + text.slice(0, 1000));
         return;
       }
 
       const data = JSON.parse(text);
-
       state.sessionId = data.session_id;
-      setStatus("Run Check", "Session started. Waiting for SSE...");
+      setStatus('Run Check', 'Session started. Waiting for SSE...');
       subscribeSSE();
-
     } catch (e) {
-      setStatus("Run Check", "FAILED");
-      showError("startCheck", String(e));
+      setStatus('Run Check', 'FAILED');
+      showError('startCheck', String(e));
     }
   }
 
@@ -245,18 +274,36 @@
     const es = new EventSource(`/api/progress/${state.sessionId}`);
 
     es.onerror = function () {
-      showError("SSE", "EventSource connection error.");
+      showError('SSE', 'EventSource connection error.');
     };
 
     es.onmessage = async (ev) => {
       const m = JSON.parse(ev.data);
+      if (m.event === 'start') {
+        setProgress(0, Number(m.total || 0));
+      }
+      if (m.event === 'item') {
+        const total = Number($('progress-count').dataset.total || 0);
+        setProgress(Number(m.idx || 0) + 1, total);
+      }
       if (m.event === 'done') {
         es.close();
         await loadResults();
+        $('progress-block').style.display = 'none';
+        $('results-section').style.display = 'block';
       }
     };
   }
 
+  function setProgress(done, total) {
+    const safeTotal = total > 0 ? total : 0;
+    const safeDone = done > safeTotal ? safeTotal : done;
+    $('progress-count').textContent = `${safeDone} / ${safeTotal}`;
+    $('progress-count').dataset.total = String(safeTotal);
+    const pct = safeTotal ? Math.round((safeDone / safeTotal) * 100) : 0;
+    $('progress-percent').textContent = `${pct}%`;
+    $('progress-bar').style.width = `${pct}%`;
+  }
 
   function aggregateEngineText(row, engine) {
     const data = (row.ocr_results || {})[engine];
@@ -264,63 +311,68 @@
     if (typeof data.text === 'string') return data.text;
     const zones = Array.isArray(data.zones) ? data.zones.slice() : [];
     zones.sort((a, b) => Number(a.zone_index || 0) - Number(b.zone_index || 0));
-    return zones.map(z => z.text || '').join('');
+    return zones.map((z) => z.text || '').join('');
   }
 
   async function loadResults() {
     clearError();
-    setStatus("Results", "loading...");
+    setStatus('Results', 'loading...');
 
     try {
-      const resp = await fetch(`/api/results/${state.sessionId}?per_page=200`);
+      const url = `/api/results/${state.sessionId}?per_page=200`;
+      const resp = await fetch(url);
       const text = await resp.text();
 
       if (!resp.ok) {
-        setStatus("Results", "FAILED");
-        showError("loadResults", "HTTP " + resp.status + "\n" + text.slice(0, 1000));
+        setStatus('Results', 'FAILED');
+        showError('loadResults', 'HTTP ' + resp.status + '\n' + text.slice(0, 1000));
         return;
       }
 
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch (e) {
-        setStatus("Results", "FAILED");
-        showError("loadResults", "JSON parse error " + String(e) + "\n" + text.slice(0, 1000));
-        return;
-      }
-
-      $('results-section').style.display = 'block';
-      const tbody = $('results-body');
-      tbody.innerHTML = '';
-      for (const row of (data.results || [])) {
-        const tr = document.createElement('tr');
-        const lang = (row.lang || '').toLowerCase();
-        const rtl = isRtl(lang) ? 'rtl' : 'ltr';
-        const st = row.status === 'PASS' ? 'PASS' : 'MANUAL';
-        tr.innerHTML = `
-          <td>${esc(row.image_name || '')}</td>
-          <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}</td>
-          <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}</td>
-          <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}</td>
-          <td dir='${rtl}'>${esc(row.ref_text || '')}</td>
-          <td>${st}</td>
-          <td>${reviewHtml(row, st)}</td>`;
-        tbody.appendChild(tr);
-      }
-      bindReviewButtons();
-      setStatus("Results", "OK");
+      const data = JSON.parse(text);
+      state.currentResults = data.results || [];
+      renderResultsTable();
+      updateErrorList();
+      setStatus('Results', 'OK');
     } catch (e) {
-      setStatus("Results", "FAILED");
-      showError("loadResults", String(e));
+      setStatus('Results', 'FAILED');
+      showError('loadResults', String(e));
     }
+  }
+
+  function renderResultsTable() {
+    const tbody = $('results-body');
+    tbody.innerHTML = '';
+    const hidePass = $('hide-pass').checked;
+    const visibleRows = hidePass ? state.currentResults.filter((r) => r.status !== 'PASS') : state.currentResults;
+
+    for (const row of visibleRows) {
+      const tr = document.createElement('tr');
+      const lang = (row.lang || '').toLowerCase();
+      const rtl = isRtl(lang) ? 'rtl' : 'ltr';
+      const st = row.status === 'PASS' ? 'PASS' : 'MANUAL';
+      const imgUrl = `/image/${encodeURIComponent(state.sessionId)}/${encodeURIComponent(row.image_name || '')}`;
+      tr.innerHTML = `
+        <td><a href="${imgUrl}" target="_blank" rel="noopener"><img class="result-thumb" src="${imgUrl}" alt="${esc(row.image_name || '')}"></a></td>
+        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}</td>
+        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}</td>
+        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}</td>
+        <td dir='${rtl}'>${esc(row.ref_text || '')}</td>
+        <td><span class="status-badge ${st === 'PASS' ? 'status-pass' : 'status-manual'}">${st}</span></td>
+        <td>${reviewHtml(row, st)}</td>`;
+      tbody.appendChild(tr);
+    }
+
+    state.unresolvedCount = state.currentResults.filter((r) => r.status !== 'PASS' && !r.manual_decision).length;
+    bindReviewButtons();
+    updateFinishButtons();
   }
 
   function reviewHtml(row, st) {
     if (st !== 'MANUAL') return row.manual_decision || '';
-    if (row.manual_decision === 'ok') return 'OK';
-    if (row.manual_decision === 'error') return 'ERROR';
-    return `<button class='btn btn-xs' data-id='${row.id}' data-d='ok'>OK</button> <button class='btn btn-xs' data-id='${row.id}' data-d='error'>ERROR</button>`;
+    const okClass = row.manual_decision === 'ok' ? 'btn-primary' : 'btn-secondary';
+    const errClass = row.manual_decision === 'error' ? 'btn-primary' : 'btn-secondary';
+    return `<div class="review-actions"><button class='btn btn-xs ${okClass}' data-id='${row.id}' data-d='ok'>OK</button><button class='btn btn-xs ${errClass}' data-id='${row.id}' data-d='error'>ERROR</button></div>`;
   }
 
   function bindReviewButtons() {
@@ -330,22 +382,43 @@
         fd.append('decision', b.dataset.d);
         await fetch(`/api/decide/${b.dataset.id}`, { method: 'POST', body: fd });
         await loadResults();
-        await maybeShowErrors();
       };
     });
   }
 
-  async function maybeShowErrors() {
-    const resp = await fetch(`/api/results/${state.sessionId}?per_page=200`);
-    const data = await resp.json();
-    const unresolved = (data.results || []).filter(r => (r.status !== 'PASS') && !r.manual_decision).length;
-    if (unresolved > 0) return;
-    const p = await fetch(`/api/phase2/error_paths/${state.sessionId}`);
-    const d = await p.json();
-    $('error-paths').textContent = (d.paths || []).join('\n');
+  function updateErrorList() {
+    const errorPaths = state.currentResults
+      .filter((r) => r.status !== 'PASS' && r.manual_decision === 'error')
+      .map((r) => r.image_name || '');
+    $('error-paths').textContent = errorPaths.join('\n');
   }
 
-  function pos(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
-  function isRtl(lang) { const b = lang.split('-')[0]; return b === 'ar' || b === 'he' || b === 'il'; }
-  function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+  function updateFinishButtons() {
+    const disabled = state.unresolvedCount > 0;
+    $('btn-finish-top').disabled = disabled;
+    $('btn-finish-bottom').disabled = disabled;
+  }
+
+  function finishReview() {
+    if (state.unresolvedCount > 0) return;
+    $('results-section').style.display = 'none';
+    $('final-errors').style.display = 'block';
+  }
+
+  function expandResults() {
+    $('final-errors').style.display = 'none';
+    $('results-section').style.display = 'block';
+  }
+
+  function pos(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+  }
+  function isRtl(lang) {
+    const b = lang.split('-')[0];
+    return b === 'ar' || b === 'he' || b === 'il';
+  }
+  function esc(s) {
+    return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
 })();
