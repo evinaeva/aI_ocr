@@ -25,7 +25,7 @@ from fastapi.templating import Jinja2Templates
 from .normalizer import normalize_strict, clean_for_display
 from .ocr import run_ocr_multi, ALL_ENGINES, emit_startup_warnings
 from .section_matcher import extract_sections, select_best
-from .zip_processor import process_zip
+from .zip_processor import process_zip, build_zip_manifest
 from .version import APP_VERSION, BUILD_TIME_UTC, get_build_info
 from .logging_utils import log_event
 from .pipeline.template_routes import router as template_router
@@ -33,6 +33,7 @@ from .pipeline.template_editor_routes import editor_router
 from .pipeline.preview_routes import preview_router
 from .pipeline.run_routes import run_router
 from .pipeline.history_routes import history_router  # always imported — see Phase 6 fix
+from .pipeline.phase2_routes import phase2_router
 from .pipeline import template_store
 
 logging.basicConfig(level=logging.INFO)
@@ -96,6 +97,13 @@ def init_db():
             data BLOB,
             PRIMARY KEY (session_id, filename)
         );
+        CREATE TABLE IF NOT EXISTS phase2_uploads (
+            upload_id TEXT PRIMARY KEY,
+            created_at REAL,
+            zip_bytes BLOB,
+            section_number INTEGER,
+            section_name TEXT
+        );
     """)
     # Migration: add engines column if missing (for old deployments)
     try:
@@ -129,6 +137,7 @@ app.include_router(editor_router)
 app.include_router(preview_router)
 app.include_router(run_router)
 app.include_router(history_router)  # unconditional — endpoints return 503 when persistence disabled
+app.include_router(phase2_router)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _sse_queues: Dict[str, asyncio.Queue] = {}
@@ -174,6 +183,29 @@ def _is_authenticated(request: Request) -> bool:
     now = int(time.time())
     delta = now - iat
     return 0 <= delta <= SESSION_TTL_SECONDS
+
+
+
+
+def _cleanup_phase2_uploads(conn: sqlite3.Connection):
+    cutoff = time.time() - SESSION_TTL_SECONDS
+    conn.execute("DELETE FROM phase2_uploads WHERE created_at < ?", (cutoff,))
+
+
+def _read_archive_image(zip_bytes: bytes, archive_path: str) -> bytes:
+    parts = archive_path.split("!/")
+    current = io.BytesIO(zip_bytes)
+    zf = zipfile.ZipFile(current)
+    try:
+        for i, part in enumerate(parts):
+            if i == len(parts) - 1:
+                return zf.read(part)
+            nested_bytes = zf.read(part)
+            zf.close()
+            current = io.BytesIO(nested_bytes)
+            zf = zipfile.ZipFile(current)
+    finally:
+        zf.close()
 
 
 def _new_csrf_token() -> str:
@@ -363,6 +395,119 @@ async def progress(session_id: str):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
+@app.post("/api/phase2/manifest")
+async def phase2_manifest(
+    zip_file: UploadFile = File(...),
+    section_number: Optional[int] = Form(None),
+    section_name: Optional[str] = Form(None),
+):
+    zip_bytes = await zip_file.read()
+    upload_id = str(uuid.uuid4())
+    manifest = build_zip_manifest(zip_bytes)
+
+    conn = get_db()
+    _cleanup_phase2_uploads(conn)
+    conn.execute(
+        "INSERT INTO phase2_uploads (upload_id, created_at, zip_bytes, section_number, section_name) VALUES (?,?,?,?,?)",
+        (upload_id, time.time(), zip_bytes, section_number, section_name),
+    )
+    conn.commit()
+    conn.close()
+
+    targets = []
+    for t in manifest:
+        en_item = next((it for it in t.items if it.lang == "en"), None)
+        targets.append({
+            "target_id": t.target_id,
+            "en_available": t.has_en,
+            "preview_en_path": en_item.archive_path if en_item else None,
+            "items_count": len(t.items),
+        })
+
+    return JSONResponse({"upload_id": upload_id, "targets": targets})
+
+
+@app.get("/api/phase2/preview/{upload_id}/{target_id}")
+async def phase2_preview(upload_id: str, target_id: str):
+    conn = get_db()
+    row = conn.execute("SELECT zip_bytes, created_at FROM phase2_uploads WHERE upload_id=?", (upload_id,)).fetchone()
+    conn.close()
+    if not row:
+        return JSONResponse({"error": "upload not found"}, status_code=404)
+    if row["created_at"] < time.time() - SESSION_TTL_SECONDS:
+        return JSONResponse({"error": "upload expired"}, status_code=410)
+
+    manifest = build_zip_manifest(bytes(row["zip_bytes"]))
+    target = next((t for t in manifest if t.target_id == target_id), None)
+    if not target:
+        return JSONResponse({"error": "target not found"}, status_code=404)
+    en_item = next((it for it in target.items if it.lang == "en"), None)
+    if not en_item:
+        return JSONResponse({"error": "en not found"}, status_code=404)
+
+    img_bytes = _read_archive_image(bytes(row["zip_bytes"]), en_item.archive_path)
+    lower = en_item.archive_path.lower()
+    media = "image/png" if lower.endswith(".png") else "image/jpeg"
+    return Response(content=img_bytes, media_type=media)
+
+
+@app.post("/api/phase2/check/{upload_id}")
+async def phase2_check(upload_id: str):
+    conn = get_db()
+    row = conn.execute(
+        "SELECT zip_bytes, section_number, section_name, created_at FROM phase2_uploads WHERE upload_id=?",
+        (upload_id,),
+    ).fetchone()
+    if not row:
+        conn.close()
+        return JSONResponse({"error": "upload not found"}, status_code=404)
+    if row["created_at"] < time.time() - SESSION_TTL_SECONDS:
+        conn.close()
+        return JSONResponse({"error": "upload expired"}, status_code=410)
+
+    engines = ["google", "azure", "ocrspace"]
+    zip_bytes = bytes(row["zip_bytes"])
+    section_number = row["section_number"]
+    section_name = row["section_name"]
+    conn.close()
+
+    session_id = _start_session_from_zip(zip_bytes, section_number, section_name, engines)
+    return JSONResponse({"session_id": session_id, "engines": engines})
+
+
+@app.get("/api/phase2/error_paths/{session_id}")
+async def phase2_error_paths(session_id: str):
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT image_name FROM results WHERE session_id=? AND manual_decision='error' ORDER BY image_name",
+        (session_id,),
+    ).fetchall()
+    conn.close()
+    return JSONResponse({"paths": [r["image_name"] for r in rows]})
+
+
+def _start_session_from_zip(
+    zip_bytes: bytes,
+    section_number: Optional[int],
+    section_name: Optional[str],
+    engines: List[str],
+) -> str:
+    session_id = str(uuid.uuid4())
+
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO sessions (session_id, created_at, status, total, pass_count, fail_count, manual_count, engines) VALUES (?,?,?,?,?,?,?,?)",
+        (session_id, time.time(), "pending", 0, 0, 0, 0, ",".join(engines)),
+    )
+    conn.commit()
+    conn.close()
+
+    asyncio.create_task(
+        _process_session(session_id, zip_bytes, section_number, section_name, engines)
+    )
+    return session_id
+
+
 _VALID_ENGINES = set(ALL_ENGINES)
 
 
@@ -377,21 +522,8 @@ async def upload(
     if not selected:
         selected = ["google"]
 
-    session_id = str(uuid.uuid4())
     zip_bytes = await zip_file.read()
-
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO sessions (session_id, created_at, status, total, pass_count, fail_count, manual_count, engines) VALUES (?,?,?,?,?,?,?,?)",
-        (session_id, time.time(), "pending", 0, 0, 0, 0, ",".join(selected)),
-    )
-    conn.commit()
-    conn.close()
-
-    asyncio.create_task(
-        _process_session(session_id, zip_bytes, section_number, section_name, selected)
-    )
-
+    session_id = _start_session_from_zip(zip_bytes, section_number, section_name, selected)
     return JSONResponse({"session_id": session_id, "engines": selected})
 
 

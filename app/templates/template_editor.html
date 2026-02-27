@@ -3,88 +3,50 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Template Editor — OCR Localization Checker</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>Phase 2 Editor</title>
 <link rel="stylesheet" href="/static/style.css">
-
 </head>
 <body>
 <header class="header">
   <span class="header-icon">🔍</span>
-  <h1>OCR Localization Checker — Template Editor</h1>
+  <h1>Phase 2 Editor</h1>
   <a href="/templates" class="back-link">← Templates</a>
 </header>
 
-<!-- Top bar -->
 <div class="topbar">
-  <label>Image:</label>
-  <input type="file" id="img-input" accept="image/png,image/jpeg">
-
-  <label>Load:</label>
-  <select id="load-select"><option value="">— Load template —</option></select>
-
-  <label>Name:</label>
-  <input type="text" id="template-name" placeholder="template_name">
-
-  <button class="btn btn-primary" id="btn-save">Save template</button>
-  <button class="btn btn-secondary" id="btn-download">Download JSON</button>
-  <button class="btn btn-secondary" id="btn-clear">Clear</button>
+  <label>ZIP:</label><input type="file" id="zip-input" accept=".zip">
+  <label>Section #:</label><input type="number" id="section-number" min="1" placeholder="optional">
+  <label>Section:</label><input type="text" id="section-name" placeholder="optional">
+  <button class="btn btn-primary" id="btn-parse">Continue / Parse</button>
+  <button class="btn btn-primary" id="btn-check" disabled>Check ZIP</button>
 </div>
 
-<div id="save-errors"></div>
-
-<!-- Editor layout -->
 <div class="editor-layout">
-
-  <!-- Canvas area -->
-  <div class="canvas-area">
-    <canvas id="editor-canvas" width="600" height="400"></canvas>
-    <div id="canvas-msg" class="canvas-msg is-hidden"></div>
-  </div>
-
-  <!-- Right sidebar -->
   <div class="sidebar">
-    <div class="sidebar-section">
-      <h4>Zones</h4>
-      <div id="zones-list" class="zones-list"></div>
-    </div>
-
-    <!-- Zone edit form -->
-    <div id="sidebar-form" class="is-hidden">
-      <h4>Edit Zone</h4>
-      <div class="form-row">
-        <label>Name</label>
-        <input type="text" id="sf-name" placeholder="zone_name">
-      </div>
-      <div class="form-row">
-        <label>Type</label>
-        <select id="sf-type">
-          <option value="ocr">ocr</option>
-          <option value="logo">logo</option>
-        </select>
-      </div>
-      <div class="form-row">
-        <label>Engines</label>
-        <div class="engines-row">
-          <label><input type="checkbox" id="sf-engine-google"> google</label>
-          <label><input type="checkbox" id="sf-engine-azure"> azure</label>
-          <label><input type="checkbox" id="sf-engine-ocrspace"> ocrspace</label>
-        </div>
-      </div>
-      <div class="form-row">
-        <label>Notes</label>
-        <textarea id="sf-notes" placeholder="optional notes"></textarea>
-      </div>
-      <div class="form-row">
-        <label>BBox (source px)</label>
-        <input type="text" id="sf-bbox" readonly>
-      </div>
-      <button class="btn btn-danger btn-full" id="btn-delete-zone">Delete zone</button>
+    <h4>Targets</h4>
+    <div id="targets-list" class="zones-list"></div>
+  </div>
+  <div class="canvas-area">
+    <canvas id="editor-canvas" width="800" height="500"></canvas>
+    <div id="target-msg" class="canvas-msg"></div>
+  </div>
+  <div class="sidebar">
+    <h4>Zones</h4>
+    <div id="zones-list" class="zones-list"></div>
+    <div id="sidebar-form" style="display:none">
+      <div class="form-row"><label>Name</label><input id="sf-name" type="text"></div>
+      <div class="form-row"><label>Type</label><select id="sf-type"><option value="text">text</option><option value="logo">logo</option></select></div>
+      <div class="form-row" id="google-mode-row"><label>Google mode</label><select id="sf-google-mode"><option value="TEXT_DETECTION">TEXT_DETECTION</option><option value="DOCUMENT_TEXT_DETECTION">DOCUMENT_TEXT_DETECTION</option></select></div>
+      <div class="form-row"><label>BBox</label><input id="sf-bbox" readonly></div>
+      <button class="btn btn-danger" id="btn-delete-zone">Delete</button>
     </div>
   </div>
-
 </div>
+
+<section class="results-section" id="results-section" style="display:none; margin:20px;">
+  <table class="results-table"><thead><tr><th>img</th><th>gv</th><th>azure</th><th>ocr.space</th><th>reference</th><th>status</th><th>review</th></tr></thead><tbody id="results-body"></tbody></table>
+  <pre id="error-paths" style="margin-top:12px;"></pre>
+</section>
 
 <script src="/static/template_editor.js"></script>
 </body>
