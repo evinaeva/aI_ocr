@@ -20,6 +20,8 @@
     unresolvedCount: 0,
     progressSource: null,
     modalScale: 1,
+    modalNaturalWidth: 0,
+    modalNaturalHeight: 0,
     zipFilename: '',
     templatesLoaded: false,
     matchedTemplateName: '',
@@ -75,7 +77,7 @@
   $('image-modal').addEventListener('click', (e) => {
     if (e.target.id === 'image-modal') closeImageModal();
   });
-  $('image-modal-stage').addEventListener('wheel', handleModalZoom, { passive: false });
+  $('image-modal-img').addEventListener('wheel', handleModalZoom, { passive: false });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') closeImageModal();
   });
@@ -678,7 +680,6 @@
 
   async function loadResults() {
     clearError();
-    setStatus('Results', 'loading...');
 
     if (!state.sessionId) {
       setStatus('Results', 'FAILED');
@@ -692,7 +693,6 @@
       const text = await resp.text();
 
       if (!resp.ok) {
-        setStatus('Results', 'FAILED');
         showError('loadResults', 'HTTP ' + resp.status + '\n' + text.slice(0, 1000));
         return;
       }
@@ -705,9 +705,7 @@
       state.currentSessionMeta = data.session || null;
       renderResultsTable();
       updateErrorList();
-      setStatus('Results', 'OK');
     } catch (e) {
-      setStatus('Results', 'FAILED');
       showError('loadResults', String(e));
     }
   }
@@ -924,9 +922,23 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
   function openImageModal(src) {
     if (!src) return;
     state.modalScale = 1;
+    state.modalNaturalWidth = 0;
+    state.modalNaturalHeight = 0;
     const img = $('image-modal-img');
     img.src = src;
     img.style.transform = 'scale(1)';
+    img.style.transformOrigin = 'top left';
+    img.style.width = 'auto';
+    img.style.height = 'auto';
+    img.onload = () => {
+      state.modalNaturalWidth = img.naturalWidth;
+      state.modalNaturalHeight = img.naturalHeight;
+      img.style.width = state.modalNaturalWidth + 'px';
+      img.style.height = state.modalNaturalHeight + 'px';
+      const stage = $('image-modal-stage');
+      stage.scrollLeft = 0;
+      stage.scrollTop = 0;
+    };
     $('image-modal').style.display = 'block';
     document.body.style.overflow = 'hidden';
   }
@@ -935,7 +947,12 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
     const modal = $('image-modal');
     if (!modal || modal.style.display === 'none') return;
     modal.style.display = 'none';
-    $('image-modal-img').src = '';
+    const img = $('image-modal-img');
+    img.src = '';
+    img.style.transform = 'scale(1)';
+    state.modalScale = 1;
+    state.modalNaturalWidth = 0;
+    state.modalNaturalHeight = 0;
     document.body.style.overflow = '';
   }
 
@@ -947,7 +964,7 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
     e.preventDefault();
     const stage = $('image-modal-stage');
     const prevScale = state.modalScale;
-    const nextScale = Math.max(1, Math.min(5, prevScale * (e.deltaY < 0 ? 1.1 : 0.9)));
+    const nextScale = Math.max(0.2, Math.min(5, prevScale * (e.deltaY < 0 ? 1.1 : 0.9)));
     if (nextScale === prevScale) return;
 
     const offsetX = e.clientX - rect.left;
