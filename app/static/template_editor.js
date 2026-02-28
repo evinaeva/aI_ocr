@@ -122,9 +122,15 @@
   }
 
   // Проверяет, можно ли включать кнопку «Проверить локализацию».
-  // Кнопка активна только когда у каждого target есть ≥ 1 зона.
+  // Учитываем только runnable-targets (с доступным en preview), иначе кнопку
+  // можно заблокировать навсегда на таргете, где зоны физически нельзя разметить.
   function updateCheckButton() {
-    const allHaveZones = state.targets.every((t) => {
+    const runnableTargets = state.targets.filter((t) => t.en_available);
+    if (!runnableTargets.length) {
+      $('btn-check').disabled = true;
+      return;
+    }
+    const allHaveZones = runnableTargets.every((t) => {
       const zonesForTarget = state.zonesByTarget[t.target_id] || [];
       return zonesForTarget.length > 0;
     });

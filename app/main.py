@@ -468,7 +468,7 @@ async def phase2_manifest(
 
 
 
-@app.get("/api/phase2/preview/{upload_id}/{target_id}")
+@app.get("/api/phase2/preview/{upload_id}/{target_id:path}")
 async def phase2_preview(upload_id: str, target_id: str):
     conn = get_db()
     row = conn.execute("SELECT zip_bytes, created_at FROM phase2_uploads WHERE upload_id=?", (upload_id,)).fetchone()
@@ -480,7 +480,12 @@ async def phase2_preview(upload_id: str, target_id: str):
 
     manifest = build_zip_manifest(bytes(row["zip_bytes"]))
     targets = _phase2_targets_from_manifest(manifest)
-    target = next((t for t in targets if str(t.get("target_id")) == target_id), None)
+    raw_target_id = target_id
+    decoded_target_id = unquote(target_id)
+    target = next((
+        t for t in targets
+        if str(t.get("target_id")) in {raw_target_id, decoded_target_id}
+    ), None)
     if not target:
         return JSONResponse({"error": "target not found"}, status_code=404)
     en_path = target.get("preview_en_path")
