@@ -469,7 +469,6 @@ async def phase2_manifest(
 
 
 @app.get("/api/phase2/preview/{upload_id}/{target_id}")
-
 async def phase2_preview(upload_id: str, target_id: str):
     conn = get_db()
     row = conn.execute("SELECT zip_bytes, created_at FROM phase2_uploads WHERE upload_id=?", (upload_id,)).fetchone()
