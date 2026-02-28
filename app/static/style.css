@@ -663,7 +663,11 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 #sidebar-form .form-row select { flex: 1; min-width: 0; }
 #sf-bbox { font-family: var(--mono); background: #0d1427; color: var(--text); }
 #btn-delete-zone { margin-top: 12px; }
+<<<<<<< ours
 #targets-list .btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+=======
+#targets-list .btn { max-width: 100%; white-space: normal; text-align: left; word-break: break-all; height: auto; min-height: 2rem; }
+>>>>>>> theirs
 
 .progress-panel { margin: 12px 20px; max-width: 520px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--card); }
 .progress-panel-title { margin-bottom: 8px; color: var(--text-secondary); }
