@@ -650,7 +650,7 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 .editor-layout { display: flex; min-height: calc(100vh - 176px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; }
 .topbar { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-bottom: 1rem; padding-left: 20px; }
 .topbar #template-select { min-width: 260px; }
-.header-links { margin-left: auto; display: inline-flex; gap: 14px; align-items: center; }
+.header-links { margin-left: auto; display: inline-flex; flex-direction: column; gap: 4px; align-items: flex-end; }
 .header-right-stack {
   margin-left: auto;
   display: flex;
@@ -667,6 +667,7 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
   padding: 6px 8px;
   font-size: 12px;
 }
+.engine-usage-title { color: var(--text); font-weight: 600; margin-bottom: 4px; }
 .engine-usage-month { color: var(--text-secondary); margin-bottom: 4px; }
 .engine-usage-table { width: 100%; border-collapse: collapse; }
 .engine-usage-table th,
@@ -768,11 +769,11 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 }
 .image-modal-stage {
   position: absolute;
-  left: 30px;
-  top: 20px;
-  right: 30px;
-  bottom: 20px;
+  inset: 20px 30px;
   overflow: auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
 }
 .image-modal-img {
   transform-origin: top left;
