@@ -22,6 +22,11 @@
     modalScale: 1,
     zipFilename: '',
     templatesLoaded: false,
+    matchedTemplateName: '',
+    autoApplyMatchedTemplate: false,
+    zonesBeforeAutoApply: null,
+    autoAppliedMatchedTemplate: '',
+    autoApplyLockedByManualChanges: false,
   };
 
   function setStatus(step, text) {
@@ -55,6 +60,8 @@
   $('btn-parse').addEventListener('click', parseZip);
   $('btn-check').addEventListener('click', startCheck);
   $('template-select').addEventListener('change', onTemplateSelect);
+  const autoApplyCheckbox = $('template-auto-apply');
+  if (autoApplyCheckbox) autoApplyCheckbox.addEventListener('change', onAutoApplyToggle);
   $('btn-clear-error').addEventListener('click', clearError);
   $('hide-pass').addEventListener('change', () => {
     if (!state.sessionId) return;
@@ -250,11 +257,73 @@
       sel.appendChild(opt);
     });
     state.templatesLoaded = true;
+    const autoApply = $('template-auto-apply');
+    if (autoApply) autoApply.checked = false;
+    showAutoApplyNote('');
     showTemplateMatch(false);
   }
 
   function showTemplateMatch(show) {
     $('template-match').style.display = show ? 'inline-flex' : 'none';
+    $('template-auto-apply-wrap').style.display = show ? 'inline-flex' : 'none';
+    if (!show) showAutoApplyNote('');
+  }
+
+  function deepCopyZonesByTarget(zonesByTarget) {
+    return JSON.parse(JSON.stringify(zonesByTarget || {}));
+  }
+
+  function showAutoApplyNote(text) {
+    const note = $('template-auto-apply-note');
+    if (!note) return;
+    note.textContent = text || '';
+    note.style.display = text ? 'inline-flex' : 'none';
+  }
+
+  function markManualZoneChange() {
+    if (!state.autoAppliedMatchedTemplate) return;
+    state.autoApplyLockedByManualChanges = true;
+    showAutoApplyNote('Автошаблон уже изменён вручную; отключение недоступно.');
+  }
+
+  function clearTemplateZones() {
+    Object.keys(state.zonesByTarget).forEach((targetId) => {
+      state.zonesByTarget[targetId] = [];
+    });
+    renderZones();
+    draw();
+    updateCheckButton();
+  }
+
+  function onAutoApplyToggle() {
+    const checkbox = $('template-auto-apply');
+    if (!checkbox) return;
+    const checked = checkbox.checked;
+    state.autoApplyMatchedTemplate = checked;
+    if (!state.matchedTemplateName) return;
+
+    if (!checked) {
+      if (state.autoApplyLockedByManualChanges) {
+        checkbox.checked = true;
+        state.autoApplyMatchedTemplate = true;
+        showAutoApplyNote('Сначала уберите ручные изменения или загрузите архив заново.');
+        return;
+      }
+      if (state.autoAppliedMatchedTemplate === state.matchedTemplateName && state.zonesBeforeAutoApply) {
+        state.zonesByTarget = deepCopyZonesByTarget(state.zonesBeforeAutoApply);
+        $('template-select').value = '';
+        state.autoAppliedMatchedTemplate = '';
+        renderZones();
+        draw();
+        updateCheckButton();
+      }
+      showAutoApplyNote('');
+      return;
+    }
+
+    showAutoApplyNote('');
+    $('template-select').value = state.matchedTemplateName;
+    onTemplateSelect();
   }
 
   async function applyTemplateByName(name) {
@@ -281,30 +350,60 @@
 
   async function onTemplateSelect() {
     const name = $('template-select').value || '';
-    showTemplateMatch(Boolean(state.zipFilename && name && state.zipFilename === name));
+    showTemplateMatch(Boolean(state.matchedTemplateName));
     if (!name) {
       updateCheckButton();
       return;
     }
     await applyTemplateByName(name);
+    if (name !== state.matchedTemplateName) {
+      state.autoAppliedMatchedTemplate = '';
+      state.zonesBeforeAutoApply = null;
+      state.autoApplyLockedByManualChanges = false;
+      showAutoApplyNote('');
+    }
     updateCheckButton();
   }
 
   async function autoSelectMatchingTemplate() {
     const sel = $('template-select');
+    const autoApply = $('template-auto-apply');
+    state.matchedTemplateName = '';
+    state.autoApplyMatchedTemplate = false;
+    state.zonesBeforeAutoApply = null;
+    state.autoAppliedMatchedTemplate = '';
+    state.autoApplyLockedByManualChanges = false;
+    if (autoApply) autoApply.checked = false;
+
     if (!sel || !state.zipFilename) {
       showTemplateMatch(false);
       return;
     }
+
     const match = Array.from(sel.options).find((o) => o.value === state.zipFilename);
     if (!match) {
       sel.value = '';
       showTemplateMatch(false);
+      updateCheckButton();
       return;
     }
-    sel.value = state.zipFilename;
+
+    state.matchedTemplateName = state.zipFilename;
+    state.autoApplyMatchedTemplate = true;
+    if (autoApply) autoApply.checked = true;
     showTemplateMatch(true);
-    await onTemplateSelect();
+    showAutoApplyNote('');
+
+    if (state.autoApplyMatchedTemplate) {
+      state.zonesBeforeAutoApply = deepCopyZonesByTarget(state.zonesByTarget);
+      sel.value = state.matchedTemplateName;
+      await onTemplateSelect();
+      state.autoAppliedMatchedTemplate = state.matchedTemplateName;
+      return;
+    }
+
+    sel.value = '';
+    updateCheckButton();
   }
 
   function renderTargets() {
@@ -389,6 +488,7 @@
     state.drawing = null;
     if (x2 - x1 < 5 || y2 - y1 < 5) return draw();
     zones().push({ name: `zone_${zones().length + 1}`, zone_type: 'text', google_mode: 'TEXT_DETECTION', bbox: [Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2)] });
+    markManualZoneChange();
     state.selected = zones().length - 1;
     renderZones();
     draw();
@@ -449,12 +549,14 @@
     const z = zones()[state.selected];
     if (!z) return;
     z.name = $('sf-name').value;
+    markManualZoneChange();
     renderZones();
   });
   $('sf-type').addEventListener('change', () => {
     const z = zones()[state.selected];
     if (!z) return;
     z.zone_type = $('sf-type').value;
+    markManualZoneChange();
     syncForm();
     renderZones();
   });
@@ -462,10 +564,12 @@
     const z = zones()[state.selected];
     if (!z) return;
     z.google_mode = $('sf-google-mode').value;
+    markManualZoneChange();
   });
   $('btn-delete-zone').addEventListener('click', () => {
     if (state.selected < 0) return;
     zones().splice(state.selected, 1);
+    markManualZoneChange();
     state.selected = -1;
     renderZones();
     draw();
@@ -721,6 +825,11 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
         if (data && data.session_id) {
           state.sessionId = data.session_id;
         }
+        const row = state.currentResults.find((r) => String(r.id) === String(b.dataset.id));
+        if (row) {
+          row.manual_decision = b.dataset.d;
+          updateFinishButtons();
+        }
         await loadResults();
       };
     });
@@ -735,11 +844,12 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
 
   function updateFinishButtons() {
     $('btn-finish-top').disabled = false;
-    const hasOnlyPassOrManual = state.currentResults.every((r) => r.status === 'PASS' || r.status === 'MANUAL');
-    const allManualReviewed = state.currentResults
-      .filter((r) => r.status === 'MANUAL')
-      .every((r) => r.manual_decision === 'ok' || r.manual_decision === 'error');
-    $('btn-finish-bottom').disabled = !(hasOnlyPassOrManual && allManualReviewed);
+    const designerIssuesBtn = $('btn-finish-bottom');
+    const allFinalized = state.currentResults.every((r) => {
+      if (r.status === 'PASS') return true;
+      return r.manual_decision === 'ok' || r.manual_decision === 'error';
+    });
+    designerIssuesBtn.disabled = !allFinalized;
   }
 
   function showDesignerIssues() {
@@ -770,6 +880,11 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
     state.drawing = null;
     state.scale = 1;
     state.zonesByTarget = {};
+    state.matchedTemplateName = '';
+    state.autoApplyMatchedTemplate = false;
+    state.zonesBeforeAutoApply = null;
+    state.autoAppliedMatchedTemplate = '';
+    state.autoApplyLockedByManualChanges = false;
 
     $('results-body').innerHTML = '';
     $('results-section').style.display = 'none';
@@ -781,6 +896,9 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
     $('target-msg').textContent = '';
     $('sidebar-form').style.display = 'none';
     $('template-select').value = '';
+    const autoApply = $('template-auto-apply');
+    if (autoApply) autoApply.checked = false;
+    showAutoApplyNote('');
     showTemplateMatch(false);
     document.querySelector('.editor-layout').style.display = '';
     $('btn-check').disabled = true;

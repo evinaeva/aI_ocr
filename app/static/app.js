@@ -54,6 +54,7 @@ const $resultsBody     = $('results-body');
 const $pagination      = $('pagination');
 const $lightbox        = $('lightbox');
 const $lightboxImg     = $('lightbox-img');
+const $lightboxStage   = $('lightbox-stage');
 const $lightboxClose   = $('lightbox-close');
 
 function setSectionVisible(el, visible) {
@@ -394,9 +395,66 @@ $btnNew.addEventListener('click', () => {
 });
 
 // ── Lightbox ────────────────────────────────────────────────────────────
-function openLightbox(src) { $lightboxImg.src = src; $lightbox.classList.add('open'); }
-function closeLightbox()   { $lightbox.classList.remove('open'); }
-$lightbox.addEventListener('click', e => { if (e.target === $lightbox) closeLightbox(); });
+const lightboxState = {
+  baseScale: 1,
+  zoomScale: 1,
+  naturalWidth: 0,
+  naturalHeight: 0,
+};
+
+function applyLightboxTransform() {
+  const scale = lightboxState.baseScale * lightboxState.zoomScale;
+  $lightboxImg.style.transform = 'scale(' + scale + ')';
+}
+
+function fitLightboxToViewport() {
+  if (!lightboxState.naturalWidth || !lightboxState.naturalHeight) return;
+  const maxW = window.innerWidth * 0.9;
+  const maxH = window.innerHeight * 0.9;
+  lightboxState.baseScale = Math.min(1, maxW / lightboxState.naturalWidth, maxH / lightboxState.naturalHeight);
+  applyLightboxTransform();
+}
+
+function openLightbox(src) {
+  lightboxState.zoomScale = 1;
+  $lightboxImg.style.transform = '';
+  $lightboxImg.src = src;
+  $lightbox.classList.add('open');
+}
+
+function closeLightbox() {
+  $lightbox.classList.remove('open');
+  $lightboxImg.src = '';
+  $lightboxImg.style.transform = '';
+}
+
+$lightboxImg.addEventListener('load', () => {
+  lightboxState.naturalWidth = $lightboxImg.naturalWidth;
+  lightboxState.naturalHeight = $lightboxImg.naturalHeight;
+  $lightboxImg.style.width = lightboxState.naturalWidth + 'px';
+  $lightboxImg.style.height = lightboxState.naturalHeight + 'px';
+  fitLightboxToViewport();
+  $lightboxStage.scrollTop = 0;
+  $lightboxStage.scrollLeft = 0;
+});
+
+$lightboxImg.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const zoomStep = e.deltaY < 0 ? 1.1 : 0.9;
+  lightboxState.zoomScale = Math.min(6, Math.max(0.2, lightboxState.zoomScale * zoomStep));
+  applyLightboxTransform();
+}, { passive: false });
+
+window.addEventListener('resize', () => {
+  if ($lightbox.classList.contains('open')) fitLightboxToViewport();
+});
+
+$lightbox.addEventListener('click', (e) => {
+  if (e.target === $lightbox) closeLightbox();
+});
+$lightboxStage.addEventListener('click', (e) => {
+  if (!$lightboxImg.contains(e.target)) closeLightbox();
+});
 $lightboxClose.addEventListener('click', closeLightbox);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
 
