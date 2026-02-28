@@ -72,6 +72,29 @@
     if (e.key === 'Escape') closeImageModal();
   });
 
+  loadEngineUsageWidget();
+
+  async function loadEngineUsageWidget() {
+    const monthEl = $('engine-usage-month');
+    if (!monthEl) return;
+    try {
+      const resp = await fetch('/api/metrics/engine-usage/current_month');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      monthEl.textContent = data.month_label || 'Current month';
+      const available = Boolean(data.available);
+      const fallback = available ? '0' : 'n/a';
+      $('engine-usage-google').textContent = available && data.google_requests != null ? String(data.google_requests) : fallback;
+      $('engine-usage-azure').textContent = available && data.azure_requests != null ? String(data.azure_requests) : fallback;
+      $('engine-usage-ocrspace').textContent = available && data.ocrspace_requests != null ? String(data.ocrspace_requests) : fallback;
+    } catch (_) {
+      monthEl.textContent = 'Current month';
+      $('engine-usage-google').textContent = 'n/a';
+      $('engine-usage-azure').textContent = 'n/a';
+      $('engine-usage-ocrspace').textContent = 'n/a';
+    }
+  }
+
   async function parseZip() {
     clearError();
     const f = $('zip-input').files[0];

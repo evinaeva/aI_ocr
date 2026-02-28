@@ -30,6 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .logging_utils import log_event
+from .metrics.engine_usage import get_current_month_usage, init_engine_usage_metrics
 from .normalizer import clean_for_display, normalize_strict
 from .ocr import ALL_ENGINES, emit_startup_warnings, run_ocr_multi
 from .pipeline import template_store
@@ -136,6 +137,7 @@ async def lifespan(app: FastAPI):
     init_db()
     # B6: emit Azure env var warnings once at startup
     emit_startup_warnings()
+    init_engine_usage_metrics()
     log_event("app_start", app_version=APP_VERSION)
     yield
 
@@ -361,6 +363,11 @@ async def log_editor_load(request: Request):
     except Exception:
         pass
     return JSONResponse({"ok": True})
+
+
+@app.get("/api/metrics/engine-usage/current_month")
+async def api_engine_usage_current_month():
+    return JSONResponse(get_current_month_usage())
 
 
 @app.get("/image/{session_id}/{filename:path}")

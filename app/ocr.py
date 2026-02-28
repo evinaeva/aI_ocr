@@ -15,6 +15,8 @@ import base64
 import threading
 from typing import Optional
 
+from app.metrics.engine_usage import increment_engine_usage
+
 logger = logging.getLogger(__name__)
 
 ALL_ENGINES = ["google", "azure", "ocrspace"]
@@ -159,6 +161,7 @@ def _ocr_google(image_bytes: bytes, google_mode: Optional[str] = None) -> Option
             response = client.document_text_detection(image=image)
         else:
             response = client.text_detection(image=image)
+        increment_engine_usage("google")
         if response.error.message:
             logger.warning("Google Vision error: %s", response.error.message)
             return None
@@ -218,6 +221,7 @@ def google_batch_annotate_images(image_bytes_list: list, google_mode: Optional[s
         ]
         try:
             batch_response = client.batch_annotate_images(requests=requests)
+            increment_engine_usage("google")
             responses = list(batch_response.responses)
             # Pad if API returns fewer responses than requested
             while len(responses) < len(chunk):
@@ -282,6 +286,7 @@ def _ocr_azure(image_bytes: bytes) -> Optional[tuple]:
     try:
         with httpx.Client(timeout=30) as client:
             r = client.post(url, params=params, headers=headers, content=image_bytes)
+            increment_engine_usage("azure")
             r.raise_for_status()
             data = r.json()
         read_result = data.get("readResult", {})
@@ -338,6 +343,7 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple]:
                     "isOverlayRequired": "false",
                 },
             )
+            increment_engine_usage("ocrspace")
             r.raise_for_status()
             data = r.json()
         if data.get("IsErroredOnProcessing"):
