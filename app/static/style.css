@@ -641,6 +641,20 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 .topbar { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-bottom: 1rem; padding-left: 20px; }
 .topbar #template-select { min-width: 260px; }
 .header-links { margin-left: auto; display: inline-flex; gap: 14px; align-items: center; }
+.engine-usage-widget {
+  margin-left: 16px;
+  border: 1px solid var(--border);
+  background: rgba(17, 25, 45, 0.75);
+  border-radius: 8px;
+  padding: 6px 8px;
+  min-width: 190px;
+  font-size: 12px;
+}
+.engine-usage-month { color: var(--text-secondary); margin-bottom: 4px; }
+.engine-usage-table { width: 100%; border-collapse: collapse; }
+.engine-usage-table th,
+.engine-usage-table td { text-align: left; padding: 1px 0; }
+.engine-usage-table td { text-align: right; }
 .template-match { color: #22c55e; font-weight: 600; }
 .canvas-area { flex:1; overflow:auto; padding:1rem; background:#0d1528; }
 #editor-canvas { background:#fff; border-radius:8px; box-shadow: 0 8px 28px rgba(0,0,0,.35); }
