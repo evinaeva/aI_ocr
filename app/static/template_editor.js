@@ -93,9 +93,10 @@
       state.uploadId = data.upload_id;
       state.targets = data.targets || [];
       renderTargets();
-
-      const hasRunnable = state.targets.some((t) => t.en_available);
-      $('btn-check').disabled = !hasRunnable;
+      // После загрузки манифеста зон ещё нет. Держим кнопку «Проверить локализацию»
+      // заблокированной пока пользователь не определит хотя бы одну зону для каждого target.
+      // Не включать её только по en_available.
+      updateCheckButton();
       setStatus('Parse ZIP', 'OK');
     } catch (e) {
       setStatus('Parse ZIP', 'FAILED');
@@ -146,25 +147,38 @@
       const row = document.createElement('div');
       row.className = 'zone-row';
       const dataTarget = String(t.target_id || '');
-      row.innerHTML = `<button class="btn btn-xs" data-target="${esc(dataTarget)}" title="${esc(dataTarget)}">${esc(dataTarget)}</button> ${t.en_available ? '' : '<span style="color:#dc2626">en не найден</span>'}`;
+      // Отображаем полный target_id на нескольких строках, разделяя по "/".
+      const parts = dataTarget.split('/').filter((p) => p);
+      const display = parts.map((p) => esc(p)).join('<br>');
+      row.innerHTML = `<button class="btn btn-xs" data-target="${esc(dataTarget)}" title="${esc(dataTarget)}">${display}</button> ${t.en_available ? '' : '<span style="color:#dc2626">en не найден</span>'}`;
       row.querySelector('button').onclick = () => openTarget(t);
       el.appendChild(row);
     });
     if (state.targets.length) openTarget(state.targets[0]);
   }
 
+  // Проверяет, можно ли включать кнопку «Проверить локализацию».
+  // Кнопка активна только когда у каждого target есть ≥ 1 зона.
+  function updateCheckButton() {
+    const allHaveZones = state.targets.every((t) => {
+      const zonesForTarget = state.zonesByTarget[t.target_id] || [];
+      return zonesForTarget.length > 0;
+    });
+    $('btn-check').disabled = !allHaveZones;
+  }
+
   async function openTarget(t) {
     state.currentTarget = t.target_id;
     state.selected = -1;
+    // Пересчитываем состояние кнопки при смене target; preview availability не влияет.
+    updateCheckButton();
     $('target-msg').textContent = t.en_available ? '' : 'en не найден';
     if (!t.en_available) {
-      $('btn-check').disabled = true;
       state.image = null;
       draw();
       renderZones();
       return;
     }
-    $('btn-check').disabled = false;
     const img = new Image();
     img.onload = () => {
       state.image = img;
@@ -175,6 +189,7 @@
       draw();
       renderZones();
     };
+    // В src используем полный encodeURIComponent(target_id) без split().
     img.src = `/api/phase2/preview/${encodeURIComponent(state.uploadId)}/${encodeURIComponent(t.target_id)}`;
   }
 
@@ -241,6 +256,8 @@
       zl.appendChild(row);
     });
     syncForm();
+    // После создания или удаления зон обновляем состояние кнопки.
+    updateCheckButton();
   }
 
   function syncForm() {
