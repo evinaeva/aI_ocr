@@ -12,6 +12,7 @@
     zonesByTarget: {},
     image: null,
     scale: 1,
+    scaleByTarget: {},
     drawing: null,
     selected: -1,
     currentResults: [],
@@ -107,8 +108,9 @@
       ensureTarget(t.target_id);
       const row = document.createElement('div');
       row.className = 'zone-row';
-      const title = t.preview_en_path ? t.preview_en_path.split('/').slice(-2, -1)[0] || t.target_id : t.target_id;
-      row.innerHTML = `<button class="btn btn-xs" data-target="${esc(t.target_id)}">${esc(title)}</button> ${t.en_available ? '' : '<span style="color:#dc2626">en не найден</span>'}`;
+      const dataTarget = String(t.target_id || '');
+      const uiTitle = dataTarget.length > 13 ? `${dataTarget.slice(0, 13)}...` : dataTarget;
+      row.innerHTML = `<button class="btn btn-xs" data-target="${esc(dataTarget)}" title="${esc(dataTarget)}">${esc(uiTitle)}</button> ${t.en_available ? '' : '<span style="color:#dc2626">en не найден</span>'}`;
       row.querySelector('button').onclick = () => openTarget(t);
       el.appendChild(row);
     });
@@ -130,7 +132,8 @@
     const img = new Image();
     img.onload = () => {
       state.image = img;
-      state.scale = Math.min(1, 800 / img.naturalWidth, 500 / img.naturalHeight);
+      const fitScale = Math.min(1, 800 / img.naturalWidth, 500 / img.naturalHeight);
+      state.scale = state.scaleByTarget[t.target_id] || fitScale;
       canvas.width = Math.round(img.naturalWidth * state.scale);
       canvas.height = Math.round(img.naturalHeight * state.scale);
       draw();
@@ -165,6 +168,21 @@
     renderZones();
     draw();
   });
+
+  canvas.addEventListener('wheel', (e) => {
+    if (!state.image) return;
+    const p = pos(e);
+    if (p.x < 0 || p.y < 0 || p.x > canvas.width || p.y > canvas.height) return;
+    e.preventDefault();
+    const zoomStep = e.deltaY < 0 ? 1.1 : 0.9;
+    const nextScale = Math.min(6, Math.max(0.1, state.scale * zoomStep));
+    if (nextScale === state.scale) return;
+    state.scale = nextScale;
+    state.scaleByTarget[state.currentTarget] = nextScale;
+    canvas.width = Math.round(state.image.naturalWidth * state.scale);
+    canvas.height = Math.round(state.image.naturalHeight * state.scale);
+    draw();
+  }, { passive: false });
 
   function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
