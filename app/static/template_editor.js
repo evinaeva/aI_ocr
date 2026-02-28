@@ -464,8 +464,6 @@
 
     try {
       await saveCurrentTemplate();
-      await loadSavedTemplates();
-      await autoSelectMatchingTemplate();
     } catch (e) {
       setStatus('Run Check', 'FAILED');
       showError('startCheck', String(e));
@@ -554,6 +552,12 @@
     clearError();
     setStatus('Results', 'loading...');
 
+    if (!state.sessionId) {
+      setStatus('Results', 'FAILED');
+      showError('loadResults', 'No session_id. Start check first.');
+      return;
+    }
+
     try {
       const url = `/api/results/${state.sessionId}?per_page=200`;
       const resp = await fetch(url);
@@ -566,6 +570,9 @@
       }
 
       const data = JSON.parse(text);
+      if (data && data.session && data.session.session_id) {
+        state.sessionId = data.session.session_id;
+      }
       state.currentResults = data.results || [];
       renderResultsTable();
       updateErrorList();
@@ -654,7 +661,16 @@
       b.onclick = async () => {
         const fd = new FormData();
         fd.append('decision', b.dataset.d);
-        await fetch(`/api/decide/${b.dataset.id}`, { method: 'POST', body: fd });
+        const resp = await fetch(`/api/decide/${b.dataset.id}`, { method: 'POST', body: fd });
+        if (!resp.ok) {
+          const text = await resp.text();
+          showError('decide', 'HTTP ' + resp.status + '\n' + text.slice(0, 1000));
+          return;
+        }
+        const data = await resp.json();
+        if (data && data.session_id) {
+          state.sessionId = data.session_id;
+        }
         await loadResults();
       };
     });

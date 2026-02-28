@@ -903,10 +903,14 @@ async def decide(result_id: int, decision: str = Form(...)):
     if decision not in ("ok", "error"):
         return JSONResponse({"error": "invalid decision"}, status_code=400)
     conn = get_db()
+    row = conn.execute("SELECT session_id FROM results WHERE id=?", (result_id,)).fetchone()
+    if not row:
+        conn.close()
+        return JSONResponse({"error": "result not found"}, status_code=404)
     conn.execute("UPDATE results SET manual_decision=? WHERE id=?", (decision, result_id))
     conn.commit()
     conn.close()
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "session_id": row["session_id"]})
 
 
 @app.post("/api/debug/ocr")
