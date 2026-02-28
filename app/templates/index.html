@@ -3,7 +3,10 @@
 {% block title %}OCR Localization Checker{% endblock %}
 
 {% block header_actions %}
-<a href="/about" class="header-link">About</a>
+<nav class="header-links">
+  <a href="/templates" class="header-link">Templates</a>
+  <a href="/about" class="header-link">About</a>
+</nav>
 {% endblock %}
 
 {% block content %}
@@ -102,7 +105,9 @@
 
 <div class="lightbox-overlay" id="lightbox">
   <button class="lightbox-close" id="lightbox-close">✕</button>
-  <img id="lightbox-img">
+  <div class="lightbox-stage" id="lightbox-stage">
+    <img id="lightbox-img" alt="Preview image">
+  </div>
 </div>
 {% endblock %}
 
