@@ -59,9 +59,61 @@ class SelectionResult:
     best: Optional[ScoredCandidate]
     all_candidates: List[ScoredCandidate]
     manual_required: bool
-    status: str          # "PASS" | "FAIL" | "MANUAL"
+    status: str          # "PASS" | "MANUAL"
     delta: float         # top1.score - top2.score
     reason: str
+    reference_confidence: float = 0.0
+    score_top1: Optional[float] = None
+    score_top2: Optional[float] = None
+    confidence_margin: float = 0.0
+
+
+# Score range is derived from fixed scoring rules in _score_section:
+#   name score:      min=-0.5, max=+1.0
+#   long-text penalty:      -0.3
+#   strict bonus:           +5.0
+# Therefore:
+#   S_MIN = -0.5 + (-0.3) = -0.8
+#   S_MAX = +1.0 + (+5.0) = +6.0
+# Jaccard fallback (+ up to 2.0) and soft_equal (+3.0) stay below S_MAX.
+_SCORE_MIN = -0.8
+_SCORE_MAX = 6.0
+_MARGIN_MAX = _SCORE_MAX - _SCORE_MIN
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _reference_confidence(top1: Optional[ScoredCandidate], top2: Optional[ScoredCandidate]) -> tuple[float, Optional[float], Optional[float], float]:
+    """
+    Deterministic confidence for reference matching based on top-1 score (s1)
+    and top-2 gap (margin = s1 - s2).
+
+    Score bounds are derived from this scorer's fixed rules:
+    - minimum ~= -0.8 (name penalty -0.5 + long_text penalty -0.3)
+    - maximum = 6.0 (strict_equal +5.0 plus high-priority name +1.0)
+    """
+    if top1 is None:
+        return 0.0, None, None, 0.0
+
+    s1 = float(top1.score)
+    s2 = float(top2.score) if top2 is not None else None
+
+    # Clamp protects against out-of-range values if scoring rules change.
+    s1n = _clamp01((s1 - _SCORE_MIN) / (_SCORE_MAX - _SCORE_MIN))
+
+    top1_content = normalize_soft(top1.section.content_text)
+    top1_valid = bool(top1_content) and (not top1.has_placeholder_flag)
+
+    if s2 is not None:
+        margin = s1 - s2
+    else:
+        margin = _MARGIN_MAX if top1_valid else 0.0
+
+    mn = _clamp01(margin / _MARGIN_MAX)
+    conf = _clamp01(0.7 * s1n + 0.3 * mn)
+    return conf, s1, s2, margin
 
 
 # ─── DOCX parsing ───────────────────────────────────────────────────────────────
@@ -295,6 +347,9 @@ def _score_section(section: Section, ocr_text: str, lang: str) -> ScoredCandidat
         if ocr_tokens_set and cand_tokens_set:
             overlap = len(ocr_tokens_set & cand_tokens_set)
             union   = len(ocr_tokens_set | cand_tokens_set)
+            # Jaccard = |intersection(tokens)| / |union(tokens)|.
+            # Multiplier 2.0 is a simple score scaling to keep this fallback
+            # comparable with the strict/soft match bonus scale.
             score  += (overlap / union) * 2.0 if union else 0
 
     return ScoredCandidate(
@@ -315,11 +370,13 @@ def select_best(
 ) -> SelectionResult:
     if not sections:
         return SelectionResult(best=None, all_candidates=[], manual_required=True,
-                               status="MANUAL", delta=0.0, reason="no_sections")
+                               status="MANUAL", delta=0.0, reason="no_sections",
+                               reference_confidence=0.0, score_top1=None, score_top2=None, confidence_margin=0.0)
 
     if len(ocr_text.strip()) < 3:
         return SelectionResult(best=None, all_candidates=[], manual_required=True,
-                               status="MANUAL", delta=0.0, reason="ocr_too_short")
+                               status="MANUAL", delta=0.0, reason="ocr_too_short",
+                               reference_confidence=0.0, score_top1=None, score_top2=None, confidence_margin=0.0)
 
     # ── HINT HARD FILTER ──────────────────────────────────────────────────────────
     filtered = sections
@@ -338,6 +395,7 @@ def select_best(
     top1  = candidates[0]
     top2  = candidates[1] if len(candidates) > 1 else None
     delta = (top1.score - top2.score) if top2 else 999.0
+    conf, s1, s2, margin = _reference_confidence(top1, top2)
 
     # all_placeholders: only trigger if hint narrowed to a single section
     # OR if all filtered candidates have placeholders
@@ -348,18 +406,23 @@ def select_best(
             pass  # fall through to normal scoring
         else:
             return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
-                                   status="MANUAL", delta=delta, reason="all_placeholders")
+                                   status="MANUAL", delta=delta, reason="all_placeholders",
+                                   reference_confidence=0.0, score_top1=s1, score_top2=s2, confidence_margin=margin)
 
     if delta < 0.05 and not top1.strict_equal:
         return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
-                               status="MANUAL", delta=delta, reason="ambiguous_delta")
+                               status="MANUAL", delta=delta, reason="ambiguous_delta",
+                               reference_confidence=conf, score_top1=s1, score_top2=s2, confidence_margin=margin)
 
     if top1.strict_equal:
         return SelectionResult(best=top1, all_candidates=candidates, manual_required=False,
-                               status="PASS", delta=delta, reason="strict_equal")
+                               status="PASS", delta=delta, reason="strict_equal",
+                               reference_confidence=conf, score_top1=s1, score_top2=s2, confidence_margin=margin)
     if top1.soft_equal:
         return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
-                               status="MANUAL", delta=delta, reason="soft_equal_only")
+                               status="MANUAL", delta=delta, reason="soft_equal_only",
+                               reference_confidence=conf, score_top1=s1, score_top2=s2, confidence_margin=margin)
 
     return SelectionResult(best=top1, all_candidates=candidates, manual_required=False,
-                           status="FAIL", delta=delta, reason="no_match")
+                           status="MANUAL", delta=delta, reason="no_match",
+                           reference_confidence=conf, score_top1=s1, score_top2=s2, confidence_margin=margin)
