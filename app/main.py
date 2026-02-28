@@ -419,25 +419,7 @@ async def progress(session_id: str):
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 
-@app.post("/api/phase2/manifest")
-async def phase2_manifest(
-    zip_file: UploadFile = File(...),
-    section_number: Optional[int] = Form(None),
-    section_name: Optional[str] = Form(None),
-):
-    zip_bytes = await zip_file.read()
-    upload_id = str(uuid.uuid4())
-    manifest = build_zip_manifest(zip_bytes)
-
-    conn = get_db()
-    _cleanup_phase2_uploads(conn)
-    conn.execute(
-        "INSERT INTO phase2_uploads (upload_id, created_at, zip_bytes, section_number, section_name) VALUES (?,?,?,?,?)",
-        (upload_id, time.time(), zip_bytes, section_number, section_name),
-    )
-    conn.commit()
-    conn.close()
-
+def _phase2_targets_from_manifest(manifest) -> list[Dict[str, object]]:
     targets_map: Dict[str, Dict[str, object]] = {}
     for t in manifest:
         for item in t.items:
@@ -458,8 +440,29 @@ async def phase2_manifest(
                 entry["en_available"] = True
                 if not entry["preview_en_path"]:
                     entry["preview_en_path"] = item.archive_path
+    return [targets_map[k] for k in sorted(targets_map.keys())]
 
-    targets = [targets_map[k] for k in sorted(targets_map.keys())]
+
+@app.post("/api/phase2/manifest")
+async def phase2_manifest(
+    zip_file: UploadFile = File(...),
+    section_number: Optional[int] = Form(None),
+    section_name: Optional[str] = Form(None),
+):
+    zip_bytes = await zip_file.read()
+    upload_id = str(uuid.uuid4())
+    manifest = build_zip_manifest(zip_bytes)
+
+    conn = get_db()
+    _cleanup_phase2_uploads(conn)
+    conn.execute(
+        "INSERT INTO phase2_uploads (upload_id, created_at, zip_bytes, section_number, section_name) VALUES (?,?,?,?,?)",
+        (upload_id, time.time(), zip_bytes, section_number, section_name),
+    )
+    conn.commit()
+    conn.close()
+
+    targets = _phase2_targets_from_manifest(manifest)
 
     return JSONResponse({"upload_id": upload_id, "targets": targets})
 
@@ -475,10 +478,14 @@ async def phase2_preview(upload_id: str, target_id: str):
         return JSONResponse({"error": "upload expired"}, status_code=410)
 
     manifest = build_zip_manifest(bytes(row["zip_bytes"]))
-    target = next((t for t in manifest if t.target_id == target_id), None)
+    targets = _phase2_targets_from_manifest(manifest)
+    target = next((t for t in targets if str(t.get("target_id")) == target_id), None)
     if not target:
         return JSONResponse({"error": "target not found"}, status_code=404)
-    en_item = next((it for it in target.items if it.lang == "en"), None)
+    en_path = target.get("preview_en_path")
+    if not en_path:
+        return JSONResponse({"error": "en not found"}, status_code=404)
+    en_item = next((it for tt in manifest for it in tt.items if it.archive_path == en_path and it.lang == "en"), None)
     if not en_item:
         return JSONResponse({"error": "en not found"}, status_code=404)
 
