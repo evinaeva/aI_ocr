@@ -639,6 +639,9 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 /* editor */
 .editor-layout { display: flex; min-height: calc(100vh - 176px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; }
 .topbar { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-bottom: 1rem; padding-left: 20px; }
+.topbar #template-select { min-width: 260px; }
+.header-links { margin-left: auto; display: inline-flex; gap: 14px; align-items: center; }
+.template-match { color: #22c55e; font-weight: 600; }
 .canvas-area { flex:1; overflow:auto; padding:1rem; background:#0d1528; }
 #editor-canvas { background:#fff; border-radius:8px; box-shadow: 0 8px 28px rgba(0,0,0,.35); }
 .sidebar { width:300px; background:#11192d; border-left:1px solid var(--border); display:flex; flex-direction:column; }
