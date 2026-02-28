@@ -110,8 +110,7 @@
       const row = document.createElement('div');
       row.className = 'zone-row';
       const dataTarget = String(t.target_id || '');
-      const uiTitle = dataTarget.length > 13 ? `${dataTarget.slice(0, 13)}...` : dataTarget;
-      row.innerHTML = `<button class="btn btn-xs" data-target="${esc(dataTarget)}" title="${esc(dataTarget)}">${esc(uiTitle)}</button> ${t.en_available ? '' : '<span style="color:#dc2626">en не найден</span>'}`;
+      row.innerHTML = `<button class="btn btn-xs" data-target="${esc(dataTarget)}" title="${esc(dataTarget)}">${esc(dataTarget)}</button> ${t.en_available ? '' : '<span style="color:#dc2626">en не найден</span>'}`;
       row.querySelector('button').onclick = () => openTarget(t);
       el.appendChild(row);
     });
