@@ -17,6 +17,7 @@
     selected: -1,
     currentResults: [],
     unresolvedCount: 0,
+    progressSource: null,
   };
 
   function setStatus(step, text) {
@@ -289,7 +290,11 @@
   }
 
   function subscribeSSE() {
+    if (state.progressSource) {
+      state.progressSource.close();
+    }
     const es = new EventSource(`/api/progress/${state.sessionId}`);
+    state.progressSource = es;
 
     es.onerror = function () {
       showError('SSE', 'EventSource connection error.');
@@ -306,6 +311,7 @@
       }
       if (m.event === 'done') {
         es.close();
+        state.progressSource = null;
         await loadResults();
         $('progress-block').style.display = 'none';
         $('results-section').style.display = 'block';
@@ -412,15 +418,44 @@
   }
 
   function updateFinishButtons() {
-    const disabled = state.unresolvedCount > 0;
-    $('btn-finish-top').disabled = disabled;
-    $('btn-finish-bottom').disabled = disabled;
+    $('btn-finish-top').disabled = false;
+    $('btn-finish-bottom').disabled = false;
   }
 
   function finishReview() {
-    if (state.unresolvedCount > 0) return;
+    if (state.progressSource) {
+      state.progressSource.close();
+      state.progressSource = null;
+    }
+    state.uploadId = null;
+    state.sessionId = null;
+    state.currentResults = [];
+    state.targets = [];
+    state.currentTarget = null;
+    state.unresolvedCount = 0;
+    state.image = null;
+    state.selected = -1;
+    state.drawing = null;
+    state.scale = 1;
+    state.zonesByTarget = {};
+
+    $('results-body').innerHTML = '';
     $('results-section').style.display = 'none';
-    $('final-errors').style.display = 'block';
+    $('final-errors').style.display = 'none';
+    $('progress-block').style.display = 'none';
+    $('error-paths').textContent = '';
+    $('targets-list').innerHTML = '';
+    $('zones-list').innerHTML = '';
+    $('target-msg').textContent = '';
+    $('sidebar-form').style.display = 'none';
+    document.querySelector('.editor-layout').style.display = '';
+    $('btn-check').disabled = true;
+    $('btn-finish-top').disabled = false;
+    $('btn-finish-bottom').disabled = false;
+    $('editor-canvas').style.pointerEvents = 'auto';
+    $('editor-canvas').style.opacity = '1';
+    setProgress(0, 0);
+    draw();
   }
 
   function expandResults() {

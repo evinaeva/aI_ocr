@@ -438,17 +438,28 @@ async def phase2_manifest(
     conn.commit()
     conn.close()
 
-    targets = []
+    targets_map: Dict[str, Dict[str, object]] = {}
     for t in manifest:
-        en_item = next((it for it in t.items if it.lang == "en"), None)
-        targets.append(
-            {
-                "target_id": t.target_id,
-                "en_available": t.has_en,
-                "preview_en_path": en_item.archive_path if en_item else None,
-                "items_count": len(t.items),
-            }
-        )
+        for item in t.items:
+            inner_path = item.archive_path.split("!/", 1)[-1]
+            parts = [p for p in inner_path.split("/") if p]
+            target_id = "/".join(parts[:-1]) if len(parts) > 1 else "default"
+            entry = targets_map.setdefault(
+                target_id,
+                {
+                    "target_id": target_id,
+                    "en_available": False,
+                    "preview_en_path": None,
+                    "items_count": 0,
+                },
+            )
+            entry["items_count"] = int(entry["items_count"]) + 1
+            if item.lang == "en":
+                entry["en_available"] = True
+                if not entry["preview_en_path"]:
+                    entry["preview_en_path"] = item.archive_path
+
+    targets = [targets_map[k] for k in sorted(targets_map.keys())]
 
     return JSONResponse({"upload_id": upload_id, "targets": targets})
 
