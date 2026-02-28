@@ -3,20 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Phase 2 Editor</title>
+<title>🪄 OCR Checker</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header class="header">
-  <span class="header-icon">🔍</span>
-  <h1>Phase 2 Editor</h1>
-  <a href="/templates" class="back-link">← Templates</a>
+  <span class="header-icon">🪄</span>
+  <h1>🪄 OCR Checker</h1>
+  <nav class="header-links">
+    <a href="/templates" class="back-link">Templates</a>
+    <a href="/about" class="back-link">About</a>
+  </nav>
 </header>
 
 <div class="topbar">
   <label>ZIP:</label><input type="file" id="zip-input" accept=".zip">
   <label>Номер секции:</label><input type="number" id="section-number" min="1" placeholder="7">
   <label>Название секции:</label><input type="text" id="section-name" placeholder="Banner">
+  <label>Шаблон:</label>
+  <select id="template-select">
+    <option value="">— выбрать сохранённый шаблон —</option>
+  </select>
+  <span id="template-match" class="template-match" style="display:none;">✅ есть совпадение по шаблонам</span>
   <button class="btn btn-primary" id="btn-parse">Загрузить архив</button>
   <button class="btn btn-primary" id="btn-check" disabled>Проверить локализацию</button>
   <button class="btn btn-primary" id="btn-finish-top">Завершить</button>

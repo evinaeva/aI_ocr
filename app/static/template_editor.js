@@ -19,6 +19,8 @@
     unresolvedCount: 0,
     progressSource: null,
     modalScale: 1,
+    zipFilename: '',
+    templatesLoaded: false,
   };
 
   function setStatus(step, text) {
@@ -51,6 +53,7 @@
 
   $('btn-parse').addEventListener('click', parseZip);
   $('btn-check').addEventListener('click', startCheck);
+  $('template-select').addEventListener('change', onTemplateSelect);
   $('btn-clear-error').addEventListener('click', clearError);
   $('hide-pass').addEventListener('change', () => {
     if (!state.sessionId) return;
@@ -98,8 +101,11 @@
 
       const data = JSON.parse(text);
       state.uploadId = data.upload_id;
+      state.zipFilename = (f && f.name) ? String(f.name) : '';
       state.targets = data.targets || [];
       renderTargets();
+      await loadSavedTemplates();
+      await autoSelectMatchingTemplate();
       // После загрузки манифеста зон ещё нет. Держим кнопку «Проверить локализацию»
       // заблокированной пока пользователь не определит хотя бы одну зону для каждого target.
       // Не включать её только по en_available.
@@ -109,6 +115,172 @@
       setStatus('Parse ZIP', 'FAILED');
       showError('parseZip', String(e));
     }
+  }
+
+  function _phase2Meta(targetId, zoneName) {
+    return JSON.stringify({ phase2_target_id: targetId, phase2_zone_name: zoneName });
+  }
+
+  function _parsePhase2Meta(notes) {
+    if (!notes || typeof notes !== 'string') return null;
+    try {
+      const meta = JSON.parse(notes);
+      if (!meta || typeof meta !== 'object') return null;
+      if (!meta.phase2_target_id || !meta.phase2_zone_name) return null;
+      return { targetId: String(meta.phase2_target_id), zoneName: String(meta.phase2_zone_name) };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function editorZonesFromTemplate(template) {
+    const byTarget = {};
+    const parsedZones = Array.isArray(template?.zones) ? template.zones : [];
+
+    parsedZones.forEach((z) => {
+      const meta = _parsePhase2Meta(z.notes);
+      if (!meta) return;
+      byTarget[meta.targetId] = byTarget[meta.targetId] || [];
+      byTarget[meta.targetId].push({
+        name: meta.zoneName,
+        zone_type: z.type === 'logo' ? 'logo' : 'text',
+        google_mode: z.engine_config && z.engine_config.google_mode ? z.engine_config.google_mode : 'TEXT_DETECTION',
+        bbox: Array.isArray(z.bbox) ? z.bbox.slice() : [0, 0, 1, 1],
+      });
+    });
+
+    if (Object.keys(byTarget).length > 0) {
+      return byTarget;
+    }
+
+    const fallbackZones = parsedZones.map((z) => ({
+      name: z.name,
+      zone_type: z.type === 'logo' ? 'logo' : 'text',
+      google_mode: z.engine_config && z.engine_config.google_mode ? z.engine_config.google_mode : 'TEXT_DETECTION',
+      bbox: Array.isArray(z.bbox) ? z.bbox.slice() : [0, 0, 1, 1],
+    }));
+    state.targets.forEach((t) => {
+      byTarget[t.target_id] = fallbackZones.map((z) => ({ ...z, bbox: z.bbox.slice() }));
+    });
+    return byTarget;
+  }
+
+  function buildTemplatePayload(templateName) {
+    const sourceWidth = state.image ? state.image.naturalWidth : Math.max(1, Math.round(canvas.width / (state.scale || 1)));
+    const sourceHeight = state.image ? state.image.naturalHeight : Math.max(1, Math.round(canvas.height / (state.scale || 1)));
+    const zones = [];
+    Object.entries(state.zonesByTarget).forEach(([targetId, targetZones]) => {
+      (targetZones || []).forEach((z) => {
+        zones.push({
+          name: `${targetId}::${z.name}`,
+          type: z.zone_type === 'logo' ? 'logo' : 'ocr',
+          bbox: z.bbox,
+          engines: z.zone_type === 'logo' ? [] : ['google'],
+          engine_config: z.zone_type === 'text' ? { google_mode: z.google_mode || 'TEXT_DETECTION' } : {},
+          notes: _phase2Meta(targetId, z.name),
+        });
+      });
+    });
+    return {
+      template_name: templateName,
+      schema_version: 1,
+      source_size: [Math.max(1, sourceWidth), Math.max(1, sourceHeight)],
+      zones,
+      expected_texts: {},
+    };
+  }
+
+  async function saveCurrentTemplate() {
+    const templateName = state.zipFilename;
+    if (!templateName) return;
+    const payload = buildTemplatePayload(templateName);
+    let resp = await fetch('/api/templates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (resp.status === 409) {
+      resp = await fetch(`/api/templates/${encodeURIComponent(templateName)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error('Template save failed: HTTP ' + resp.status + ' ' + text.slice(0, 250));
+    }
+  }
+
+  async function loadSavedTemplates() {
+    const resp = await fetch('/api/templates');
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const list = Array.isArray(data.templates) ? data.templates : [];
+    const sel = $('template-select');
+    sel.innerHTML = '<option value="">— выбрать сохранённый шаблон —</option>';
+    list.forEach((name) => {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    });
+    state.templatesLoaded = true;
+    showTemplateMatch(false);
+  }
+
+  function showTemplateMatch(show) {
+    $('template-match').style.display = show ? 'inline-flex' : 'none';
+  }
+
+  async function applyTemplateByName(name) {
+    if (!name) return;
+    const resp = await fetch(`/api/templates/${encodeURIComponent(name)}`);
+    if (!resp.ok) return;
+    const tmpl = await resp.json();
+    const byTarget = editorZonesFromTemplate(tmpl);
+    Object.keys(state.zonesByTarget).forEach((targetId) => {
+      state.zonesByTarget[targetId] = [];
+    });
+    state.targets.forEach((t) => {
+      const targetZones = byTarget[t.target_id] || [];
+      state.zonesByTarget[t.target_id] = targetZones.map((z) => ({
+        name: z.name,
+        zone_type: z.zone_type === 'logo' ? 'logo' : 'text',
+        google_mode: z.google_mode || 'TEXT_DETECTION',
+        bbox: Array.isArray(z.bbox) ? z.bbox.slice() : [0, 0, 1, 1],
+      }));
+    });
+    renderZones();
+    draw();
+  }
+
+  async function onTemplateSelect() {
+    const name = $('template-select').value || '';
+    showTemplateMatch(Boolean(state.zipFilename && name && state.zipFilename === name));
+    if (!name) {
+      updateCheckButton();
+      return;
+    }
+    await applyTemplateByName(name);
+    updateCheckButton();
+  }
+
+  async function autoSelectMatchingTemplate() {
+    const sel = $('template-select');
+    if (!sel || !state.zipFilename) {
+      showTemplateMatch(false);
+      return;
+    }
+    const match = Array.from(sel.options).find((o) => o.value === state.zipFilename);
+    if (!match) {
+      sel.value = '';
+      showTemplateMatch(false);
+      return;
+    }
+    sel.value = state.zipFilename;
+    showTemplateMatch(true);
+    await onTemplateSelect();
   }
 
   function renderTargets() {
@@ -287,6 +459,16 @@
     if (active && !active.en_available) {
       setStatus('Run Check', 'FAILED');
       showError('startCheck', 'en не найден');
+      return;
+    }
+
+    try {
+      await saveCurrentTemplate();
+      await loadSavedTemplates();
+      await autoSelectMatchingTemplate();
+    } catch (e) {
+      setStatus('Run Check', 'FAILED');
+      showError('startCheck', String(e));
       return;
     }
 
@@ -531,6 +713,8 @@
     $('zones-list').innerHTML = '';
     $('target-msg').textContent = '';
     $('sidebar-form').style.display = 'none';
+    $('template-select').value = '';
+    showTemplateMatch(false);
     document.querySelector('.editor-layout').style.display = '';
     $('btn-check').disabled = true;
     $('btn-finish-top').disabled = false;

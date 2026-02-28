@@ -19,7 +19,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.logging_utils import log_event
 from .models import TemplateDef
@@ -27,6 +27,7 @@ from .firestore_store import is_persistence_enabled, get_db
 
 # ── Local file store (fallback) ───────────────────────────────────────────────
 _STORE_DIR = Path(__file__).parent.parent.parent / "data" / "templates"
+_TEMPLATE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def _ensure_dir() -> Path:
@@ -40,6 +41,22 @@ def _local_path(name: str) -> Path:
 
 def _now_utc_str() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _parse_utc_to_epoch(ts: Optional[str]) -> Optional[float]:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def _is_expired(created_at_utc: Optional[str]) -> bool:
+    created = _parse_utc_to_epoch(created_at_utc)
+    if created is None:
+        return False
+    return created < (datetime.now(timezone.utc).timestamp() - _TEMPLATE_TTL_SECONDS)
 
 
 # ── Firestore helpers ─────────────────────────────────────────────────────────
@@ -89,6 +106,24 @@ def _fs_delete(name: str) -> None:
     db.collection(_COLLECTION).document(name).delete()
 
 
+def _fs_meta() -> Dict[str, float]:
+    meta: Dict[str, float] = {}
+    try:
+        db = get_db()
+        docs = db.collection(_COLLECTION).stream()
+        for d in docs:
+            data = d.to_dict() or {}
+            created_at = data.get("created_at")
+            if _is_expired(created_at):
+                db.collection(_COLLECTION).document(d.id).delete()
+                continue
+            updated_ts = _parse_utc_to_epoch(data.get("updated_at")) or _parse_utc_to_epoch(created_at) or 0.0
+            meta[d.id] = updated_ts
+    except Exception as exc:
+        log_event("template_store_error", op="fs_meta", exc_type=type(exc).__name__, message=str(exc))
+    return meta
+
+
 # ── Local file helpers ────────────────────────────────────────────────────────
 
 def _local_list() -> List[str]:
@@ -120,6 +155,24 @@ def _local_atomic_write(path: Path, template: TemplateDef) -> None:
         raise
 
 
+def _local_meta() -> Dict[str, float]:
+    meta: Dict[str, float] = {}
+    for name in _local_list():
+        p = _local_path(name)
+        try:
+            tmpl = _local_get(name)
+            if tmpl is None:
+                continue
+            if _is_expired(tmpl.created_at_utc):
+                p.unlink(missing_ok=True)
+                continue
+            updated_ts = _parse_utc_to_epoch(tmpl.updated_at_utc) or _parse_utc_to_epoch(tmpl.created_at_utc) or p.stat().st_mtime
+            meta[name] = updated_ts
+        except Exception:
+            continue
+    return meta
+
+
 # ── Auto-import helper ────────────────────────────────────────────────────────
 
 def _auto_import_to_firestore(template: TemplateDef) -> None:
@@ -139,35 +192,53 @@ def _auto_import_to_firestore(template: TemplateDef) -> None:
 
 def list_templates() -> List[str]:
     if is_persistence_enabled():
-        return sorted(set(_fs_list()) | set(_local_list()))
-    return _local_list()
+        merged: Dict[str, float] = {}
+        merged.update(_local_meta())
+        merged.update(_fs_meta())
+        return [name for name, _ in sorted(merged.items(), key=lambda item: (-item[1], item[0]))]
+    return [name for name, _ in sorted(_local_meta().items(), key=lambda item: (-item[1], item[0]))]
 
 
 def get_template(name: str) -> Optional[TemplateDef]:
     if is_persistence_enabled():
         tmpl = _fs_get(name)
         if tmpl is not None:
+            if _is_expired(tmpl.created_at_utc):
+                _fs_delete(name)
+                return None
             return tmpl
         # Fallback to file store
         tmpl = _local_get(name)
         if tmpl is not None:
+            if _is_expired(tmpl.created_at_utc):
+                _local_path(name).unlink(missing_ok=True)
+                return None
             _auto_import_to_firestore(tmpl)
         return tmpl
-    return _local_get(name)
+    tmpl = _local_get(name)
+    if tmpl is not None and _is_expired(tmpl.created_at_utc):
+        _local_path(name).unlink(missing_ok=True)
+        return None
+    return tmpl
 
 
 def create_template(template: TemplateDef) -> TemplateDef:
     template = template.with_timestamps(update=False)
     if is_persistence_enabled():
         existing = _fs_get(template.template_name)
-        if existing is not None:
+        if existing is not None and not _is_expired(existing.created_at_utc):
             raise FileExistsError(f"Template '{template.template_name}' already exists")
+        if existing is not None and _is_expired(existing.created_at_utc):
+            _fs_delete(template.template_name)
         _fs_set(template)
         return template
     # Local file store
     p = _local_path(template.template_name)
     if p.exists():
-        raise FileExistsError(f"Template '{template.template_name}' already exists")
+        current = _local_get(template.template_name)
+        if current is not None and not _is_expired(current.created_at_utc):
+            raise FileExistsError(f"Template '{template.template_name}' already exists")
+        p.unlink(missing_ok=True)
     _local_atomic_write(p, template)
     return template
 
@@ -175,7 +246,9 @@ def create_template(template: TemplateDef) -> TemplateDef:
 def update_template(name: str, template: TemplateDef) -> TemplateDef:
     if is_persistence_enabled():
         existing = _fs_get(name)
-        if existing is None:
+        if existing is None or _is_expired(existing.created_at_utc):
+            if existing is not None:
+                _fs_delete(name)
             raise FileNotFoundError(f"Template '{name}' not found")
         data = template.model_dump()
         if existing.created_at_utc:
@@ -188,8 +261,11 @@ def update_template(name: str, template: TemplateDef) -> TemplateDef:
     if not p.exists():
         raise FileNotFoundError(f"Template '{name}' not found")
     existing = _local_get(name)
+    if existing is None or _is_expired(existing.created_at_utc):
+        p.unlink(missing_ok=True)
+        raise FileNotFoundError(f"Template '{name}' not found")
     data = template.model_dump()
-    if existing and existing.created_at_utc:
+    if existing.created_at_utc:
         data["created_at_utc"] = existing.created_at_utc
     template = TemplateDef(**data).with_timestamps(update=True)
     _local_atomic_write(p, template)
