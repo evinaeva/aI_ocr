@@ -159,8 +159,8 @@
       draw();
       renderZones();
     };
-    // target_id может содержать '/': кодируем сегменты отдельно, сохраняя путь для backend-роута.
-    img.src = `/api/phase2/preview/${encodeURIComponent(state.uploadId)}/${String(t.target_id || '').split('/').map(encodeURIComponent).join('/')}`;
+    // В src используем полный encodeURIComponent(target_id) без split().
+    img.src = `/api/phase2/preview/${encodeURIComponent(state.uploadId)}/${encodeURIComponent(t.target_id)}`;
   }
 
   canvas.addEventListener('mousedown', (e) => {
