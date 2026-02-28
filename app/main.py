@@ -402,6 +402,35 @@ async def progress(session_id: str):
     q: asyncio.Queue = asyncio.Queue(maxsize=200)
     _sse_queues[session_id] = q
 
+    conn = get_db()
+    session_row = conn.execute(
+        "SELECT status, total, pass_count, fail_count, manual_count, engines FROM sessions WHERE session_id=?",
+        (session_id,),
+    ).fetchone()
+    conn.close()
+    if session_row:
+        status = str(session_row["status"] or "")
+        total = int(session_row["total"] or 0)
+        engines_raw = str(session_row["engines"] or "")
+        engines = [e for e in engines_raw.split(",") if e]
+
+        if status == "done":
+            _push_event(session_id, {"event": "start", "total": total, "engines": engines})
+            _push_event(
+                session_id,
+                {
+                    "event": "done",
+                    "pass": int(session_row["pass_count"] or 0),
+                    "fail": int(session_row["fail_count"] or 0),
+                    "manual": int(session_row["manual_count"] or 0),
+                    "engines": engines,
+                },
+            )
+        elif status == "error":
+            _push_event(session_id, {"event": "error", "message": "Session failed"})
+        else:
+            _push_event(session_id, {"event": "start", "total": total, "engines": engines})
+
     async def event_stream() -> AsyncGenerator[str, None]:
         try:
             while True:
