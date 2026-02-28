@@ -18,6 +18,7 @@
     currentResults: [],
     unresolvedCount: 0,
     progressSource: null,
+    modalScale: 1,
   };
 
   function setStatus(step, text) {
@@ -58,8 +59,15 @@
     updateFinishButtons();
   });
   $('btn-finish-top').addEventListener('click', finishReview);
-  $('btn-finish-bottom').addEventListener('click', finishReview);
+  $('btn-finish-bottom').addEventListener('click', showDesignerIssues);
   $('btn-expand-results').addEventListener('click', expandResults);
+  $('image-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'image-modal') closeImageModal();
+  });
+  $('image-modal-stage').addEventListener('wheel', handleModalZoom, { passive: false });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeImageModal();
+  });
 
   async function parseZip() {
     clearError();
@@ -397,21 +405,59 @@
       const lang = (row.lang || '').toLowerCase();
       const rtl = isRtl(lang) ? 'rtl' : 'ltr';
       const st = row.status === 'PASS' ? 'PASS' : 'MANUAL';
+      const statusReason = getStatusReason(row, st);
       const imgUrl = `/image/${encodeURIComponent(state.sessionId)}/${encodeURIComponent(row.image_name || '')}`;
       tr.innerHTML = `
-        <td><a href="${imgUrl}" target="_blank" rel="noopener"><img class="result-thumb" src="${imgUrl}" alt="${esc(row.image_name || '')}"></a></td>
-        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}</td>
-        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}</td>
-        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}</td>
-        <td dir='${rtl}'>${esc(row.ref_text || '')}</td>
-        <td><span class="status-badge ${st === 'PASS' ? 'status-pass' : 'status-manual'}">${st}</span></td>
+        <td><img class="result-thumb js-modal-thumb" src="${imgUrl}" alt="${esc(row.image_name || '')}" data-full="${imgUrl}"></td>
+        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}${renderConfidence(row, 'google')}</td>
+        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}${renderConfidence(row, 'azure')}</td>
+        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}${renderConfidence(row, 'ocrspace')}</td>
+        <td dir='${rtl}'>${esc(row.ref_text || '')}${renderReferenceConfidence(row)}</td>
+        <td class="status-cell" data-tooltip="${esc(statusReason)}"><span class="status-badge ${st === 'PASS' ? 'status-pass' : 'status-manual'}">${st}</span></td>
         <td>${reviewHtml(row, st)}</td>`;
       tbody.appendChild(tr);
     }
 
     state.unresolvedCount = state.currentResults.filter((r) => r.status !== 'PASS' && !r.manual_decision).length;
     bindReviewButtons();
+    bindImageThumbnails();
     updateFinishButtons();
+  }
+
+  function renderConfidence(row, engine) {
+    const conf = extractConfidence(row, engine);
+    return `<span class="engine-confidence">confidence: ${conf === null ? '—' : conf.toFixed(2)}</span>`;
+  }
+
+  function renderReferenceConfidence(row) {
+    const referenceBlock = row.reference || {};
+    const candidates = [row.ref_confidence, row.reference_confidence, referenceBlock.confidence];
+    const val = pickNumber(candidates);
+    return `<span class="engine-confidence">confidence: ${val === null ? '—' : val.toFixed(2)}</span>`;
+  }
+
+  function extractConfidence(row, engine) {
+    const data = (row.ocr_results || {})[engine] || {};
+    const zones = Array.isArray(data.zones) ? data.zones : [];
+    if (typeof data.confidence === 'number') return data.confidence;
+    if (!zones.length) return null;
+    const nums = zones.map((z) => (typeof z.confidence === 'number' ? z.confidence : null)).filter((v) => v !== null);
+    if (!nums.length) return null;
+    return nums.reduce((a, b) => a + b, 0) / nums.length;
+  }
+
+  function pickNumber(values) {
+    for (const val of values) {
+      if (typeof val === 'number') return val;
+    }
+    return null;
+  }
+
+  function getStatusReason(row, status) {
+    const validationReason = row.validation?.reason || row.validation_reason || '';
+    const consensusReason = row.consensus?.reason || row.consensus_reason || row.reason || '';
+    if (status === 'PASS') return consensusReason || 'All engines matched';
+    return validationReason || consensusReason || 'Manual review required';
   }
 
   function reviewHtml(row, st) {
@@ -441,7 +487,22 @@
 
   function updateFinishButtons() {
     $('btn-finish-top').disabled = false;
-    $('btn-finish-bottom').disabled = false;
+    const hasOnlyPassOrManual = state.currentResults.every((r) => r.status === 'PASS' || r.status === 'MANUAL');
+    const allManualReviewed = state.currentResults
+      .filter((r) => r.status === 'MANUAL')
+      .every((r) => r.manual_decision === 'ok' || r.manual_decision === 'error');
+    $('btn-finish-bottom').disabled = !(hasOnlyPassOrManual && allManualReviewed);
+  }
+
+  function showDesignerIssues() {
+    const errorPaths = state.currentResults
+      .filter((r) => r.manual_decision === 'error')
+      .map((r) => r.image_name || '')
+      .filter(Boolean);
+
+    $('error-paths').textContent = errorPaths.length ? errorPaths.join('\n') : 'Косяков нет';
+    $('results-section').style.display = 'none';
+    $('final-errors').style.display = 'block';
   }
 
   function finishReview() {
@@ -473,7 +534,7 @@
     document.querySelector('.editor-layout').style.display = '';
     $('btn-check').disabled = true;
     $('btn-finish-top').disabled = false;
-    $('btn-finish-bottom').disabled = false;
+    $('btn-finish-bottom').disabled = true;
     $('editor-canvas').style.pointerEvents = 'auto';
     $('editor-canvas').style.opacity = '1';
     setProgress(0, 0);
@@ -483,6 +544,55 @@
   function expandResults() {
     $('final-errors').style.display = 'none';
     $('results-section').style.display = 'block';
+  }
+
+  function bindImageThumbnails() {
+    document.querySelectorAll('.js-modal-thumb').forEach((img) => {
+      img.onclick = () => openImageModal(img.dataset.full);
+    });
+  }
+
+  function openImageModal(src) {
+    if (!src) return;
+    state.modalScale = 1;
+    const img = $('image-modal-img');
+    img.src = src;
+    img.style.transform = 'scale(1)';
+    $('image-modal').style.display = 'block';
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeImageModal() {
+    const modal = $('image-modal');
+    if (!modal || modal.style.display === 'none') return;
+    modal.style.display = 'none';
+    $('image-modal-img').src = '';
+    document.body.style.overflow = '';
+  }
+
+  function handleModalZoom(e) {
+    const img = $('image-modal-img');
+    if (!img || !img.src) return;
+    const rect = img.getBoundingClientRect();
+    if (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom) return;
+    e.preventDefault();
+    const stage = $('image-modal-stage');
+    const prevScale = state.modalScale;
+    const nextScale = Math.max(1, Math.min(5, prevScale * (e.deltaY < 0 ? 1.1 : 0.9)));
+    if (nextScale === prevScale) return;
+
+    const offsetX = e.clientX - rect.left;
+    const offsetY = e.clientY - rect.top;
+    const ratioX = offsetX / rect.width;
+    const ratioY = offsetY / rect.height;
+
+    state.modalScale = nextScale;
+    img.style.transformOrigin = `${ratioX * 100}% ${ratioY * 100}%`;
+    img.style.transform = `scale(${nextScale})`;
+    img.style.cursor = nextScale > 1 ? 'zoom-out' : 'zoom-in';
+
+    stage.scrollLeft += (rect.width * (nextScale / prevScale - 1)) * ratioX;
+    stage.scrollTop += (rect.height * (nextScale / prevScale - 1)) * ratioY;
   }
 
   function pos(e) {

@@ -71,7 +71,7 @@
 <section class="results-section" id="results-section" style="display:none; margin:20px;">
   <div class="results-controls">
     <label><input type="checkbox" id="hide-pass"> Hide PASS</label>
-    <button class="btn btn-primary" id="btn-finish-bottom">Завершить</button>
+    <button class="btn btn-primary" id="btn-finish-bottom" disabled>показать косяки дизайнера</button>
   </div>
   <table class="results-table"><thead><tr><th>img</th><th>gv</th><th>azure</th><th>ocr.space</th><th>reference</th><th>status</th><th>review</th></tr></thead><tbody id="results-body"></tbody></table>
 </section>
@@ -83,6 +83,12 @@
   </div>
   <pre id="error-paths" style="margin-top:12px;"></pre>
 </section>
+
+<div id="image-modal" class="image-modal-overlay" style="display:none;">
+  <div id="image-modal-stage" class="image-modal-stage">
+    <img id="image-modal-img" class="image-modal-img" alt="banner preview">
+  </div>
+</div>
 
 <script src="/static/template_editor.js"></script>
 </body>

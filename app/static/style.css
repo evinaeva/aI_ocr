@@ -663,11 +663,7 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 #sidebar-form .form-row select { flex: 1; min-width: 0; }
 #sf-bbox { font-family: var(--mono); background: #0d1427; color: var(--text); }
 #btn-delete-zone { margin-top: 12px; }
-<<<<<<< ours
-#targets-list .btn { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-=======
 #targets-list .btn { max-width: 100%; white-space: normal; text-align: left; word-break: break-all; height: auto; min-height: 2rem; }
->>>>>>> theirs
 
 .progress-panel { margin: 12px 20px; max-width: 520px; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: var(--card); }
 .progress-panel-title { margin-bottom: 8px; color: var(--text-secondary); }
@@ -679,3 +675,72 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 .status-manual { color: #ffd48a; background: rgba(246,173,85,.2); }
 .review-actions { display: flex; gap: 6px; }
 .review-actions .btn { padding: 4px 8px; font-size: .76rem; }
+
+.status-cell { position: relative; }
+.status-cell[data-tooltip]::after,
+.status-cell[data-tooltip]::before {
+  opacity: 0;
+  transition: opacity .16s ease-out;
+}
+.status-cell[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  background: rgba(6, 12, 24, 0.95);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  border-radius: 8px;
+  padding: 6px 9px;
+  white-space: normal;
+  min-width: 180px;
+  max-width: 320px;
+  z-index: 20;
+  pointer-events: none;
+}
+.status-cell[data-tooltip]:hover::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 2px);
+  transform: translateX(-50%);
+  border-width: 6px 6px 0 6px;
+  border-style: solid;
+  border-color: rgba(6, 12, 24, 0.95) transparent transparent transparent;
+  z-index: 21;
+}
+
+.status-cell[data-tooltip]:hover::after,
+.status-cell[data-tooltip]:hover::before { opacity: 1; }
+
+.engine-confidence {
+  display: block;
+  margin-top: 4px;
+  color: #9ca3af;
+  font-size: 11px;
+}
+
+.image-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 7, 18, 0.42);
+  z-index: 1000;
+}
+.image-modal-stage {
+  position: absolute;
+  left: 30px;
+  top: 20px;
+  right: 30px;
+  bottom: 20px;
+  overflow: auto;
+}
+.image-modal-img {
+  transform-origin: top left;
+  transition: transform 0.08s linear;
+  max-width: none;
+  max-height: none;
+  cursor: zoom-in;
+}
