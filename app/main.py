@@ -123,7 +123,14 @@ def init_db():
     except Exception:
         pass
     # Migration: add new columns to results if missing
-    for col in ["ocr_results_json TEXT", "best_engine TEXT"]:
+    for col in [
+        "ocr_results_json TEXT",
+        "best_engine TEXT",
+        "reference_confidence REAL",
+        "reference_score_top1 REAL",
+        "reference_score_top2 REAL",
+        "reference_margin REAL",
+    ]:
         try:
             conn.execute(f"ALTER TABLE results ADD COLUMN {col}")
             conn.commit()
@@ -701,6 +708,10 @@ async def _process_session(
             score_val = 0.0
             reason = "no_text_file"
             text_name = ""
+            reference_confidence = 0.0
+            reference_score_top1 = None
+            reference_score_top2 = None
+            reference_margin = 0.0
 
             if lang in contents.texts:
                 fname, file_bytes = contents.texts[lang]
@@ -731,6 +742,10 @@ async def _process_session(
 
                 status = selection.status
                 reason = selection.reason
+                reference_confidence = selection.reference_confidence
+                reference_score_top1 = selection.score_top1
+                reference_score_top2 = selection.score_top2
+                reference_margin = selection.confidence_margin
                 if selection.best:
                     ref_text = clean_for_display(selection.best.section.content_text)
                     section_name_found = selection.best.section.name
@@ -747,8 +762,6 @@ async def _process_session(
 
             if status == "PASS":
                 pass_count += 1
-            elif status == "FAIL":
-                fail_count += 1
             else:
                 manual_count += 1
 
@@ -767,8 +780,9 @@ async def _process_session(
                 """INSERT INTO results
                    (session_id, lang, image_name, text_name, ref_text,
                     section_name, section_number, status, score, reason,
-                    ocr_results_json, best_engine)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ocr_results_json, best_engine, reference_confidence,
+                    reference_score_top1, reference_score_top2, reference_margin)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     session_id,
                     lang,
@@ -782,6 +796,10 @@ async def _process_session(
                     reason,
                     ocr_json,
                     best_engine,
+                    reference_confidence,
+                    reference_score_top1,
+                    reference_score_top2,
+                    reference_margin,
                 ),
             )
             conn.commit()
@@ -802,7 +820,7 @@ async def _process_session(
             """UPDATE sessions SET status='done',
                pass_count=?, fail_count=?, manual_count=?
                WHERE session_id=?""",
-            (pass_count, fail_count, manual_count, session_id),
+            (pass_count, 0, manual_count, session_id),
         )
         conn.commit()
         _push_event(
@@ -810,7 +828,7 @@ async def _process_session(
             {
                 "event": "done",
                 "pass": pass_count,
-                "fail": fail_count,
+                "fail": 0,
                 "manual": manual_count,
                 "engines": engines,
             },
@@ -876,6 +894,13 @@ async def get_results(
                 "manual_decision": r["manual_decision"],
                 "ocr_results": ocr_data,
                 "best_engine": r["best_engine"],
+                "reference_confidence": r["reference_confidence"] if "reference_confidence" in r.keys() else None,
+                "reference": {
+                    "confidence": r["reference_confidence"] if "reference_confidence" in r.keys() else None,
+                    "score_top1": r["reference_score_top1"] if "reference_score_top1" in r.keys() else None,
+                    "score_top2": r["reference_score_top2"] if "reference_score_top2" in r.keys() else None,
+                    "margin": r["reference_margin"] if "reference_margin" in r.keys() else None,
+                },
             }
         )
 
@@ -884,6 +909,19 @@ async def get_results(
         engines_list = [e for e in engines_str.split(",") if e]
     except Exception:
         engines_list = ["google"]
+
+    # Overall confidence must include all zones in the image/session,
+    # not only the current paginated slice.
+    total_count, total_sum = 0, 0.0
+    conn2 = get_db()
+    try:
+        total_count, total_sum = conn2.execute(
+            "SELECT COUNT(*), COALESCE(SUM(COALESCE(reference_confidence, 0.0)), 0.0) FROM results WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+    finally:
+        conn2.close()
+    overall_reference_confidence = (float(total_sum) / float(total_count)) if total_count else 0.0
 
     return JSONResponse(
         {
@@ -895,6 +933,7 @@ async def get_results(
                 "fail_count": session["fail_count"],
                 "manual_count": session["manual_count"],
                 "engines": engines_list,
+                "overall_reference_confidence": round(overall_reference_confidence, 4),
             },
             "results": results,
             "page": page,

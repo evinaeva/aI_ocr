@@ -270,6 +270,8 @@ class TestScoringNoHint:
         result = select_best(sections, pic.content_text, 'en')
         assert result.status == 'PASS'
         assert result.best.strict_equal is True
+        assert 0.0 <= result.reference_confidence <= 1.0
+        assert result.score_top1 is not None
 
     def test_empty_ocr_is_manual(self):
         sections = self._sections()
@@ -288,14 +290,15 @@ class TestScoringNoHint:
         assert result.status == 'MANUAL'
         assert result.reason == 'no_sections'
 
-    def test_no_match_is_fail(self):
+    def test_no_match_is_manual(self):
         sections = [
             Section(1, "HEADER", "The quick brown fox jumps over the lazy dog."),
             Section(2, "FOOTER", "Copyright 2026 all rights reserved."),
         ]
         result = select_best(sections, "completely random garbage xyz 123 !!!", 'en')
-        assert result.status in ('FAIL', 'MANUAL')
+        assert result.status == 'MANUAL'
         assert result.best is not None
+        assert 0.0 <= result.reference_confidence <= 1.0
 
     def test_news_penalty_applied(self):
         news_section = Section(1, 'NEWS', 'Hello World test content here')

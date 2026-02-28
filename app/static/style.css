@@ -761,3 +761,33 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
   max-height: none;
   cursor: zoom-in;
 }
+
+.overall-reference-confidence {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.ref-confidence-badge {
+  display: inline-block;
+  margin-top: 4px;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ref-high {
+  color: #89e7ac;
+  background: rgba(72, 187, 120, .18);
+}
+
+.ref-medium {
+  color: #ffd48a;
+  background: rgba(246, 173, 85, .2);
+}
+
+.ref-low {
+  color: #fca5a5;
+  background: rgba(252, 129, 129, .2);
+}

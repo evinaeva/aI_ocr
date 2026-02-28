@@ -16,6 +16,7 @@
     drawing: null,
     selected: -1,
     currentResults: [],
+    currentSessionMeta: null,
     unresolvedCount: 0,
     progressSource: null,
     modalScale: 1,
@@ -597,6 +598,7 @@
         state.sessionId = data.session.session_id;
       }
       state.currentResults = data.results || [];
+      state.currentSessionMeta = data.session || null;
       renderResultsTable();
       updateErrorList();
       setStatus('Results', 'OK');
@@ -611,6 +613,7 @@
     tbody.innerHTML = '';
     const hidePass = $('hide-pass').checked;
     const visibleRows = hidePass ? state.currentResults.filter((r) => r.status !== 'PASS') : state.currentResults;
+    updateOverallReferenceConfidence();
 
     for (const row of visibleRows) {
       const tr = document.createElement('tr');
@@ -645,7 +648,22 @@
     const referenceBlock = row.reference || {};
     const candidates = [row.ref_confidence, row.reference_confidence, referenceBlock.confidence];
     const val = pickNumber(candidates);
-    return `<span class="engine-confidence">confidence: ${val === null ? '—' : val.toFixed(2)}</span>`;
+
+    const s1 = pickNumber([referenceBlock.score_top1, row.reference_score_top1]);
+    const s2 = pickNumber([referenceBlock.score_top2, row.reference_score_top2]);
+    const margin = pickNumber([referenceBlock.margin, row.reference_margin, (s1 !== null && s2 !== null ? s1 - s2 : null)]);
+
+    const conf = val === null ? 0 : val;
+    let band = 'LOW';
+    if (conf >= 0.8) band = 'HIGH';
+    else if (conf >= 0.5) band = 'MEDIUM';
+
+    const tooltip = `confidence=${conf.toFixed(2)}
+score_top1=${s1 === null ? 'none' : s1.toFixed(2)}
+score_top2=${s2 === null ? 'none' : s2.toFixed(2)}
+margin=${(margin === null ? 0 : margin).toFixed(2)}`;
+
+    return `<span class="engine-confidence">confidence: ${val === null ? '—' : val.toFixed(2)}</span><span class="ref-confidence-badge ref-${band.toLowerCase()}" title="${esc(tooltip)}">${band}</span>`;
   }
 
   function extractConfidence(row, engine) {
@@ -663,6 +681,15 @@
       if (typeof val === 'number') return val;
     }
     return null;
+  }
+
+  function updateOverallReferenceConfidence() {
+    const el = $('overall-reference-confidence');
+    if (!el) return;
+    const val = state.currentSessionMeta && typeof state.currentSessionMeta.overall_reference_confidence === 'number'
+      ? state.currentSessionMeta.overall_reference_confidence
+      : 0;
+    el.textContent = `Overall reference confidence: ${val.toFixed(2)}`;
   }
 
   function getStatusReason(row, status) {
@@ -734,6 +761,7 @@
     state.uploadId = null;
     state.sessionId = null;
     state.currentResults = [];
+    state.currentSessionMeta = null;
     state.targets = [];
     state.currentTarget = null;
     state.unresolvedCount = 0;
