@@ -18,6 +18,12 @@ Google-batch-v2 (additive):
   google_batch_annotate_images (up to 16 per call). Results are injected into
   the per-image cache in app/ocr so _ocr_google consumes them without an
   extra API call. Dispatcher, done++ and semaphore are completely unchanged.
+
+Logo-GCS (additive):
+  Logo zones are handled exclusively by logo_matcher.match_logo_zone().
+  OCR engines are never invoked for logo zones.
+  _logo_template_match is kept as a thin backward-compat shim that delegates
+  to logo_matcher.
 """
 from __future__ import annotations
 
@@ -42,6 +48,7 @@ from app.pipeline.consensus import resolve_consensus
 from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
 from app.pipeline.firestore_store import is_persistence_enabled
 from app.pipeline.persistence import persist_run
+from app.pipeline.logo_matcher import match_logo_zone
 from app.ocr import (
     google_batch_annotate_images,
     _google_cache_put,
@@ -69,7 +76,7 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
         img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         img_w, img_h = img.size
 
-    # 2) Scale bbox from template reference space (source_size) → current img px.
+    # 2) Scale bbox from template reference space (source_size) -> current img px.
     # Defensive guards: avoid crashes on malformed source_size.
     try:
         src_w = int(source_size[0])
@@ -104,8 +111,6 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     return _guard_png_size(buf.getvalue())
 
 
-
-
 def _guard_png_size(payload: bytes) -> bytes:
     """Deterministic payload-size guard for OCR requests."""
     max_bytes_raw = os.getenv("OCR_MAX_PAYLOAD_BYTES", "4194304").strip()
@@ -128,28 +133,22 @@ def _guard_png_size(payload: bytes) -> bytes:
 
 
 def _logo_template_match(zone_bytes: bytes, zone: ZoneDef) -> dict:
-    """Run OpenCV template matching for logo zones. Never calls OCR."""
-    cfg = zone.engine_config or {}
-    tpl_b64 = (cfg.get("logo_template_base64") or "").strip()
-    if not tpl_b64:
-        return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": "MANUAL", "reason": "logo_template_missing"}
+    """
+    Backward-compat shim: delegates to logo_matcher.match_logo_zone().
 
-    try:
-        tpl_bytes = base64.b64decode(tpl_b64)
-        zone_arr = np.frombuffer(zone_bytes, dtype=np.uint8)
-        tpl_arr = np.frombuffer(tpl_bytes, dtype=np.uint8)
-        zone_img = cv2.imdecode(zone_arr, cv2.IMREAD_GRAYSCALE)
-        tpl_img = cv2.imdecode(tpl_arr, cv2.IMREAD_GRAYSCALE)
-        if zone_img is None or tpl_img is None:
-            return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": "MANUAL", "reason": "logo_decode_failed"}
-        if zone_img.shape[0] < tpl_img.shape[0] or zone_img.shape[1] < tpl_img.shape[1]:
-            return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": "MANUAL", "reason": "logo_template_larger_than_zone"}
-        res = cv2.matchTemplate(zone_img, tpl_img, cv2.TM_CCOEFF_NORMED)
-        score = float(cv2.minMaxLoc(res)[1])
-        status = "OK" if score >= float(cfg.get("logo_match_threshold", 0.8)) else "MANUAL"
-        return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": status, "reason": None if status == "OK" else "logo_mismatch"}
-    except Exception:
-        return {"selected_engine": "opencv", "selected_text": "", "rule_used": "logo_template", "zone_status": "MANUAL", "reason": "logo_match_exception"}
+    Run OpenCV template matching for logo zones. Supports a list of base64-encoded
+    logo templates via logo_templates_base64 in zone.engine_config. A single
+    backward-compatible key logo_template_base64 is also honored. Templates stored
+    in GCS are loaded via logo_gcs_set_key (or the "default" set when the
+    LOGO_TEMPLATES_GCS_BUCKET env var is set).
+
+    For each template, multi-scale TM_CCOEFF_NORMED matching in grayscale is used.
+    The highest score across all (template x scale) combinations is compared against
+    a configurable threshold (default 0.7 from LOGO_MATCH_THRESHOLD env var).
+    score >= threshold -> OK, else -> MANUAL. OCR engines are never invoked.
+    """
+    return match_logo_zone(zone_bytes, zone.engine_config or {})
+
 
 def _prefetch_google_batch(
     image_bytes: bytes,
@@ -251,7 +250,8 @@ async def run_template(
         for i, zone in enumerate(tmpl.zones):
             engines_configured = len(zone.engines) > 0
 
-            if not engines_configured:
+            # Logo zones have no OCR engines by design; skip the no-engines guard.
+            if not engines_configured and zone.type != "logo":
                 consensus = resolve_consensus(
                     engine_results=[],
                     engines_configured=False,
@@ -282,7 +282,7 @@ async def run_template(
                 )
                 continue
 
-            # Use same bytes object if it was batched
+            # Use same bytes object if it was batched (logo zones are not batched).
             if i in batched_zone_bytes:
                 zone_bytes = batched_zone_bytes[i]
             else:
@@ -292,8 +292,17 @@ async def run_template(
                     zone_bytes = image_bytes
 
             if zone.type == "logo":
+                # Logo branch: OpenCV only, OCR dispatcher is never called.
                 engine_results = []
                 consensus = _logo_template_match(zone_bytes, zone)
+                log_event(
+                    "zone_logo_match",
+                    run_id=run_id,
+                    zone_name=zone.name,
+                    zone_status=consensus.get("zone_status"),
+                    logo_score=consensus.get("logo_score"),
+                    reason=consensus.get("reason"),
+                )
             else:
                 engine_results = await asyncio.to_thread(
                     dispatch_zone_ocr, zone, zone_bytes
@@ -314,10 +323,12 @@ async def run_template(
                 run_id=run_id,
             )
 
+            # Low-similarity downgrade applies only to OCR zones, not logo zones.
             if (
                 sim_raw is not None
                 and sim_raw < SIMILARITY_THRESHOLD
                 and consensus.get("zone_status") == "OK"
+                and zone.type != "logo"
             ):
                 consensus["zone_status"] = "MANUAL"
                 consensus["reason"] = "low_similarity"
