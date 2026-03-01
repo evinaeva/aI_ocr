@@ -9,6 +9,10 @@ Variant A (Phase 6 fix):
   FIRESTORE_CLIENT_AVAILABLE  — True iff the library is importable
   PERSISTENCE_ENABLED         — True iff library importable AND env FIRESTORE_AVAILABLE=true
   FIRESTORE_AVAILABLE         — legacy alias == FIRESTORE_CLIENT_AVAILABLE (backwards compat)
+
+Ops: ensure Cloud Run has GOOGLE_CLOUD_PROJECT=<project-id> set via:
+  gcloud run services update ai-ocr --region europe-west1 \\
+    --project <project-id> --update-env-vars GOOGLE_CLOUD_PROJECT=<project-id>
 """
 from __future__ import annotations
 
@@ -44,12 +48,24 @@ def get_db():
     """
     Return a Firestore client (lazy singleton).
     Raises RuntimeError if Firestore client library is not available.
+
+    Project resolution: reads GOOGLE_CLOUD_PROJECT (preferred) or GCLOUD_PROJECT env var
+    and passes it explicitly to firestore.Client() to avoid cross-project writes after
+    a new Cloud Run revision rollout. Falls back to default (ADC) when neither is set.
+    Ops: set GOOGLE_CLOUD_PROJECT in Cloud Run env vars (see module docstring).
     """
     global _db
     if not FIRESTORE_CLIENT_AVAILABLE:
         raise RuntimeError("google-cloud-firestore is not installed")
     if _db is None:
-        _db = _firestore.Client()
+        # Read project id from env to pin Firestore to the correct GCP project.
+        # Do NOT hardcode the project id here — set GOOGLE_CLOUD_PROJECT in Cloud Run.
+        project = (
+            os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+            or os.environ.get("GCLOUD_PROJECT", "").strip()
+            or None
+        )
+        _db = _firestore.Client(project=project) if project else _firestore.Client()
     return _db
 
 
