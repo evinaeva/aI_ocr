@@ -12,7 +12,7 @@
 
   <main class="about-content">
     <section id="about-block-1" class="about-block">
-      <pre class="about-pre"># 1️⃣ Инструкция для пользователя (первый запуск)
+      <pre class="about-pre"># 1️⃣ Инструкция для пользователя
 
 ## 1.1 Что такое aI_ocr
 
@@ -49,7 +49,7 @@ lang.jpg
 
 - Для каждого target обязателен EN-баннер.
 - Если EN отсутствует → кнопка проверки заблокирована.
-- UI не парсит ZIP — всё делает backend fileciteturn0file2.
+- UI не парсит ZIP — всё делает backend
 
 ---
 
@@ -63,7 +63,7 @@ Target — это один размер/вариант дизайна.
 - имеет собственный EN-превью
 - имеет свои зоны
 - не наследует зоны от других target’ов
-- координаты не масштабируются автоматически fileciteturn0file2.
+- координаты не масштабируются автоматически
 
 ---
 
@@ -76,7 +76,7 @@ Target — это один размер/вариант дизайна.
 | text | OCR-зона |
 | logo | зона логотипа |
 
-(Строгие значения из Phase 2 fileciteturn0file4)
+(Строгие значения из Phase 2)
 
 ---
 
@@ -85,13 +85,13 @@ Target — это один размер/вариант дизайна.
 - всегда используются 3 OCR движка:
   - Google
   - Azure
-  - OCR.Space fileciteturn0file4
+  - OCR.Space 
 - можно выбрать google_mode:
   - text
   - document
 
 TEXT — для коротких надписей  
-DOCUMENT — для сложных плашек/многострочного текста fileciteturn0file3
+DOCUMENT — для сложных плашек/многострочного текста 
 
 ---
 
@@ -99,7 +99,7 @@ DOCUMENT — для сложных плашек/многострочного т�
 
 - OCR не используется
 - применяется OpenCV template matching
-- порог совпадения ≈ 0.7 fileciteturn0file3
+- порог совпадения ≈ 0.7 
 
 ---
 
@@ -109,7 +109,7 @@ DOCUMENT — для сложных плашек/многострочного т�
 
 - есть EN для target
 - есть хотя бы одна зона
-- соблюдены инварианты Phase 2 fileciteturn0file4
+- соблюдены инварианты Phase 2 
 
 ---
 
@@ -117,11 +117,11 @@ DOCUMENT — для сложных плашек/многострочного т�
 
 Для каждой зоны:
 
-1. Выполняется кроп (PNG, без сжатия) fileciteturn0file3
-2. При необходимости — upscale баннера (если меньше 1024×768) fileciteturn0file3
+1. Выполняется кроп (PNG, без сжатия) 
+2. При необходимости — upscale баннера (если меньше 1024×768) 
 3. Запускаются движки
 4. Выполняется консенсус
-5. Выполняется валидация similarity (≥ 0.85) fileciteturn0file0
+5. Выполняется валидация similarity (≥ 0.85) 
 
 ---
 
@@ -134,7 +134,7 @@ DOCUMENT — для сложных плашек/многострочного т�
 | PASS | всё корректно |
 | MANUAL | требуется ручная проверка |
 
-FAIL запрещён fileciteturn0file4
+FAIL запрещён 
 
 ---
 
@@ -145,7 +145,7 @@ FAIL запрещён fileciteturn0file4
 - OK → локализация корректна
 - ERROR → подтверждена ошибка дизайна
 
-Когда все MANUAL обработаны → показывается список archive_path с ERROR fileciteturn0file4
+Когда все MANUAL обработаны → показывается список archive_path с ERROR 
 
 ---
 
@@ -154,7 +154,7 @@ FAIL запрещён fileciteturn0file4
 - Нельзя масштабировать bbox автоматически
 - Нельзя запускать без EN
 - Нельзя создавать новые статусы
-- Нельзя менять поведение legacy /api/upload fileciteturn0file4
+- Нельзя менять поведение legacy /api/upload 
 
 ---
 
@@ -165,7 +165,7 @@ FAIL запрещён fileciteturn0file4
 | "en не найден" | в target отсутствует EN |
 | MANUAL | низкий confidence / нет консенсуса / low similarity |
 | Template not found | TTL 7 дней истёк |
-| persisted=false | Firestore недоступен (Phase 6) fileciteturn0file0 |
+| persisted=false | Firestore недоступен (Phase 6)  |
 </pre>
     </section>
 
@@ -187,7 +187,7 @@ aI_ocr — это облачный OCR-инструмент для автома�
 - similarity
 - причина MANUAL
 
-OCR.Space не возвращает confidence — это компенсируется консенсусом и expected-валидацией fileciteturn0file3
+OCR.Space не возвращает confidence — это компенсируется консенсусом и expected-валидацией 
 
 ---
 
@@ -195,7 +195,7 @@ OCR.Space не возвращает confidence — это компенсируе
 
 - зоны отображаются поверх EN-баннера
 - MANUAL экран подсвечивает зоны
-- RTL языки отображаются через dir="rtl" fileciteturn0file4
+- RTL языки отображаются через dir="rtl" 
 
 ---
 
@@ -207,7 +207,7 @@ OCR.Space не возвращает confidence — это компенсируе
 | Azure | word-confidence |
 | OCR.Space | отсутствует |
 
-fileciteturn0file3
+
 
 ---
 
@@ -217,7 +217,7 @@ OCR.Space не возвращает confidence — это компенсируе
 
 1. expected_texts в Template
 2. DOCX/TXT через section_matcher
-3. если нет — validation_applied=false fileciteturn0file1
+3. если нет — validation_applied=false 
 
 Reference трактуется как непрерывный текст.
 
@@ -228,7 +228,7 @@ Reference трактуется как непрерывный текст.
 - используется Levenshtein
 - rolling 2-row DP
 - порог 0.85
-- downgrade только если статус был OK fileciteturn0file0
+- downgrade только если статус был OK 
 
 ---
 
@@ -236,12 +236,12 @@ Reference трактуется как непрерывный текст.
 
 - OpenCV template matching
 - threshold ≈ 0.7
-- результат возвращается как zone_status OK/MANUAL fileciteturn0file3
+- результат возвращается как zone_status OK/MANUAL 
 </pre>
     </section>
 
     <section id="about-block-3" class="about-block">
-      <pre class="about-pre"># 3️⃣ Техническая архитектура (для нового разработчика)
+      <pre class="about-pre"># 3️⃣ Техническая архитектура
 
 ## 3.1 Общая модель
 
@@ -252,7 +252,7 @@ Reference трактуется как непрерывный текст.
 - Legacy ZIP → whole-image OCR → DOCX matching
 - Phase 2 zone-based pipeline
 
-fileciteturn0file3
+
 
 ---
 
@@ -268,7 +268,7 @@ Reference трактуется как непрерывный текст.
 | template_store.py | шаблоны |
 | persistence.py | Firestore |
 
-fileciteturn0file1
+
 
 ---
 
@@ -295,7 +295,7 @@ ZIP → Manifest → Target tabs
 | Azure | Image Analysis 4.0 |
 | OCR.Space | Engine 3, language=auto |
 
-fileciteturn0file3
+
 
 ---
 
@@ -306,7 +306,7 @@ ZIP → Manifest → Target tabs
 - No new worker
 - No new ZIP parser
 - TTL шаблонов 7 дней
-- Legacy endpoints неизменны fileciteturn0file4
+- Legacy endpoints неизменны 
 
 ---
 
@@ -315,7 +315,7 @@ ZIP → Manifest → Target tabs
 Phase 6:
 
 - Firestore опционален
-- флаги persisted/persistence_error обязательны если включён fileciteturn0file0
+- флаги persisted/persistence_error обязательны если включён 
 
 ---
 
@@ -323,7 +323,7 @@ Phase 6:
 
 - Google batch 16
 - async задачи через asyncio.create_task
-- без Pub/Sub (в aI_ocr) fileciteturn0file1
+- без Pub/Sub (в aI_ocr) 
 
 ---
 
@@ -332,7 +332,7 @@ Phase 6:
 - Нет пропорционального bbox-рескейла
 - Нет FAIL
 - Нет новой persistence-системы
-- Нет рефакторинга Legacy fileciteturn0file4
+- Нет рефакторинга Legacy 
 </pre>
     </section>
   </main>
