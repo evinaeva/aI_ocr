@@ -3,37 +3,338 @@
 {% block title %}About — OCR Localization Checker{% endblock %}
 
 {% block content %}
-<div class="page-card card">
-  <a href="/" class="back-link">← Back</a>
-  <h2>About</h2>
+<div class="page-card card about-layout">
+  <nav class="sidebar_scrollable">
+    <a href="#about-block-1">Инструкция (первый запуск)</a>
+    <a href="#about-block-2">Инфо (википедия)</a>
+    <a href="#about-block-3">Техническая архитектура</a>
+  </nav>
 
-  <h3>Build</h3>
-  <table class="info-table">
-    <tr><td>APP_VERSION</td><td>{{ app_version }}</td></tr>
-    <tr><td>BUILD_TIME_UTC</td><td>{{ build_time_utc }}</td></tr>
-  </table>
+  <main class="about-content">
+    <section id="about-block-1" class="about-block">
+      <pre class="about-pre"># 1️⃣ Инструкция для пользователя (первый запуск)
 
-  <h3>OCR Engines</h3>
-  <div class="engine-list">
-    {% for engine in all_engines %}
-      <span class="engine-tag">{{ engine }}</span>
-    {% endfor %}
-  </div>
+## 1.1 Что такое aI_ocr
 
-  <h3>Environment</h3>
-  <table class="info-table">
-    <tr>
-      <td>AZURE_OCR_ENDPOINT</td>
-      <td>{% if env_azure_endpoint %}<span class="badge-set">SET</span>{% else %}<span class="badge-notset">NOT_SET</span>{% endif %}</td>
-    </tr>
-    <tr>
-      <td>AZURE_OCR_KEY</td>
-      <td>{% if env_azure_key %}<span class="badge-set">SET</span>{% else %}<span class="badge-notset">NOT_SET</span>{% endif %}</td>
-    </tr>
-    <tr>
-      <td>OCR_SPACE_API_KEY</td>
-      <td>{% if env_ocrspace_key %}<span class="badge-set">SET</span>{% else %}<span class="badge-notset">NOT_SET</span>{% endif %}</td>
-    </tr>
-  </table>
+Это веб-инструмент для проверки локализации маркетинговых баннеров.
+
+Сценарий работы:
+
+1. Загружается ZIP с баннерами.
+2. Для каждого размера (target) размечаются зоны.
+3. Запускается проверка.
+4. Система автоматически определяет:
+   - PASS — всё совпадает
+   - MANUAL — требуется ручная проверка
+5. Пользователь подтверждает MANUAL случаи (OK / ERROR).
+
+---
+
+## 1.2 Поддерживаемая структура архива
+
+ZIP может иметь любую вложенность.
+
+Допустимые варианты:
+
+``` id="2jdfig"
+group/size/lang.jpg
+size/lang.jpg
+group/lang.jpg
+lang.jpg
+```
+
+Также возможны вложенные ZIP.
+
+Важно:
+
+- Для каждого target обязателен EN-баннер.
+- Если EN отсутствует → кнопка проверки заблокирована.
+- UI не парсит ZIP — всё делает backend fileciteturn0file2.
+
+---
+
+## 1.3 Что такое Target
+
+Target — это один размер/вариант дизайна.
+
+Каждый target:
+
+- имеет собственную вкладку
+- имеет собственный EN-превью
+- имеет свои зоны
+- не наследует зоны от других target’ов
+- координаты не масштабируются автоматически fileciteturn0file2.
+
+---
+
+## 1.4 Разметка зон
+
+### Типы зон
+
+| zone_type | Значение |
+|------------|-----------|
+| text | OCR-зона |
+| logo | зона логотипа |
+
+(Строгие значения из Phase 2 fileciteturn0file4)
+
+---
+
+### Для text-зон
+
+- всегда используются 3 OCR движка:
+  - Google
+  - Azure
+  - OCR.Space fileciteturn0file4
+- можно выбрать google_mode:
+  - text
+  - document
+
+TEXT — для коротких надписей  
+DOCUMENT — для сложных плашек/многострочного текста fileciteturn0file3
+
+---
+
+### Для logo-зон
+
+- OCR не используется
+- применяется OpenCV template matching
+- порог совпадения ≈ 0.7 fileciteturn0file3
+
+---
+
+## 1.5 Кнопка "Check"
+
+Становится активной только если:
+
+- есть EN для target
+- есть хотя бы одна зона
+- соблюдены инварианты Phase 2 fileciteturn0file4
+
+---
+
+## 1.6 Что происходит при проверке
+
+Для каждой зоны:
+
+1. Выполняется кроп (PNG, без сжатия) fileciteturn0file3
+2. При необходимости — upscale баннера (если меньше 1024×768) fileciteturn0file3
+3. Запускаются движки
+4. Выполняется консенсус
+5. Выполняется валидация similarity (≥ 0.85) fileciteturn0file0
+
+---
+
+## 1.7 Статусы
+
+В Phase 2 разрешены только:
+
+| Статус | Значение |
+|--------|-----------|
+| PASS | всё корректно |
+| MANUAL | требуется ручная проверка |
+
+FAIL запрещён fileciteturn0file4
+
+---
+
+## 1.8 Кнопки OK и ERROR
+
+Появляются только для MANUAL.
+
+- OK → локализация корректна
+- ERROR → подтверждена ошибка дизайна
+
+Когда все MANUAL обработаны → показывается список archive_path с ERROR fileciteturn0file4
+
+---
+
+## 1.9 Что нельзя делать
+
+- Нельзя масштабировать bbox автоматически
+- Нельзя запускать без EN
+- Нельзя создавать новые статусы
+- Нельзя менять поведение legacy /api/upload fileciteturn0file4
+
+---
+
+## 1.10 Возможные ошибки
+
+| Ситуация | Что значит |
+|-----------|-------------|
+| "en не найден" | в target отсутствует EN |
+| MANUAL | низкий confidence / нет консенсуса / low similarity |
+| Template not found | TTL 7 дней истёк |
+| persisted=false | Firestore недоступен (Phase 6) fileciteturn0file0 |
+</pre>
+    </section>
+
+    <section id="about-block-2" class="about-block">
+      <pre class="about-pre"># 2️⃣ Информационный блок (формат “википедия”)
+
+## aI_ocr
+
+aI_ocr — это облачный OCR-инструмент для автоматической проверки соответствия локализованных маркетинговых баннеров эталонным текстам.
+
+---
+
+## Tooltip-механика
+
+В UI отображаются:
+
+- per-engine результаты
+- confidence (если доступен)
+- similarity
+- причина MANUAL
+
+OCR.Space не возвращает confidence — это компенсируется консенсусом и expected-валидацией fileciteturn0file3
+
+---
+
+## Zoom изображений
+
+- зоны отображаются поверх EN-баннера
+- MANUAL экран подсвечивает зоны
+- RTL языки отображаются через dir="rtl" fileciteturn0file4
+
+---
+
+## Как считается confidence
+
+| Engine | Источник confidence |
+|--------|--------------------|
+| Google | средний confidence блоков |
+| Azure | word-confidence |
+| OCR.Space | отсутствует |
+
+fileciteturn0file3
+
+---
+
+## Как вычисляется reference
+
+Приоритет:
+
+1. expected_texts в Template
+2. DOCX/TXT через section_matcher
+3. если нет — validation_applied=false fileciteturn0file1
+
+Reference трактуется как непрерывный текст.
+
+---
+
+## Как считается similarity
+
+- используется Levenshtein
+- rolling 2-row DP
+- порог 0.85
+- downgrade только если статус был OK fileciteturn0file0
+
+---
+
+## Как сравнивается логотип
+
+- OpenCV template matching
+- threshold ≈ 0.7
+- результат возвращается как zone_status OK/MANUAL fileciteturn0file3
+</pre>
+    </section>
+
+    <section id="about-block-3" class="about-block">
+      <pre class="about-pre"># 3️⃣ Техническая архитектура (для нового разработчика)
+
+## 3.1 Общая модель
+
+Монолит FastAPI, Cloud Run deployment.
+
+Два параллельных контура:
+
+- Legacy ZIP → whole-image OCR → DOCX matching
+- Phase 2 zone-based pipeline
+
+fileciteturn0file3
+
+---
+
+## 3.2 Основные компоненты
+
+| Модуль | Назначение |
+|--------|-------------|
+| zip_processor.py | парсинг ZIP |
+| run_routes.py | v2 single run |
+| consensus.py | deterministic consensus |
+| similarity.py | Levenshtein |
+| preprocessor.py | upscale + PNG |
+| template_store.py | шаблоны |
+| persistence.py | Firestore |
+
+fileciteturn0file1
+
+---
+
+## 3.3 Pipeline
+
+``` id="b9s9oz"
+ZIP → Manifest → Target tabs
+   → Zones
+   → Crop
+   → Engines
+   → Consensus
+   → Similarity
+   → Status PASS/MANUAL
+   → Manual review
+```
+
+---
+
+## 3.4 OCR движки
+
+| Engine | Особенности |
+|--------|-------------|
+| Google | batch до 16 |
+| Azure | Image Analysis 4.0 |
+| OCR.Space | Engine 3, language=auto |
+
+fileciteturn0file3
+
+---
+
+## 3.5 Инварианты
+
+- 3 движка всегда включены
+- Статусы только PASS/MANUAL
+- No new worker
+- No new ZIP parser
+- TTL шаблонов 7 дней
+- Legacy endpoints неизменны fileciteturn0file4
+
+---
+
+## 3.6 Persistence
+
+Phase 6:
+
+- Firestore опционален
+- флаги persisted/persistence_error обязательны если включён fileciteturn0file0
+
+---
+
+## 3.7 Масштабируемость
+
+- Google batch 16
+- async задачи через asyncio.create_task
+- без Pub/Sub (в aI_ocr) fileciteturn0file1
+
+---
+
+## 3.8 Ограничения
+
+- Нет пропорционального bbox-рескейла
+- Нет FAIL
+- Нет новой persistence-системы
+- Нет рефакторинга Legacy fileciteturn0file4
+</pre>
+    </section>
+  </main>
 </div>
 {% endblock %}
