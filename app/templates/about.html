@@ -336,5 +336,44 @@ Phase 6:
 </pre>
     </section>
   </main>
+
+  <button id="scroll-to-top" class="btn btn-secondary about-scroll-top" aria-label="Scroll to top" type="button">↑</button>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (() => {
+    const scrollButton = document.getElementById('scroll-to-top');
+    const sidebarLinks = document.querySelectorAll('.sidebar_scrollable a[href^="#about-block-"]');
+
+    if (!scrollButton) {
+      return;
+    }
+
+    const toggleScrollTop = () => {
+      scrollButton.classList.toggle('is-visible', window.scrollY > 400);
+    };
+
+    scrollButton.addEventListener('click', () => {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+
+    sidebarLinks.forEach((link) => {
+      link.addEventListener('click', (event) => {
+        const target = document.querySelector(link.getAttribute('href'));
+
+        if (!target) {
+          return;
+        }
+
+        event.preventDefault();
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+
+    window.addEventListener('scroll', toggleScrollTop, { passive: true });
+    toggleScrollTop();
+  })();
+</script>
 {% endblock %}
