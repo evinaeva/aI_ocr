@@ -122,6 +122,11 @@ def init_db():
         conn.commit()
     except Exception:
         pass
+    try:
+        conn.execute("ALTER TABLE sessions ADD COLUMN session_meta_json TEXT")
+        conn.commit()
+    except Exception:
+        pass
     # Migration: add new columns to results if missing
     for col in [
         "ocr_results_json TEXT",
@@ -228,6 +233,38 @@ def _read_archive_image(zip_bytes: bytes, archive_path: str) -> bytes:
             zf = zipfile.ZipFile(current)
     finally:
         zf.close()
+
+
+def _collect_zip_debug_counters(zip_bytes: bytes) -> dict:
+    counters = {
+        "zip_entries_total": 0,
+        "images_detected_total": 0,
+        "images_queued_total": 0,
+        "images_processed_total": 0,
+        "images_skipped_total": 0,
+        "images_skipped_by_reason": {},
+    }
+
+    def _walk(zf: zipfile.ZipFile):
+        for info in zf.infolist():
+            if info.filename.endswith("/"):
+                continue
+            counters["zip_entries_total"] += 1
+            lower = info.filename.lower()
+            if lower.endswith(".zip"):
+                try:
+                    nested = zipfile.ZipFile(io.BytesIO(zf.read(info)))
+                except zipfile.BadZipFile:
+                    continue
+                with nested:
+                    _walk(nested)
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zf:
+            _walk(zf)
+    except zipfile.BadZipFile:
+        pass
+    return counters
 
 
 def _new_csrf_token() -> str:
@@ -636,31 +673,126 @@ async def _process_session(
         log_event("run_start", run_id=session_id, archive_name=archive_label)
 
         contents = process_zip(zip_bytes)
-        langs = sorted(contents.images.keys())
-        total = len(langs)
+        manifest = build_zip_manifest(zip_bytes)
+        queue_items = [item for target in manifest for item in target.items]
+        counters = _collect_zip_debug_counters(zip_bytes)
+        counters["images_detected_total"] = len(queue_items)
+        counters["images_queued_total"] = len(queue_items)
 
-        if hint_name and locked_section_number is None:
-            ref_lang = "en" if "en" in contents.texts else (sorted(contents.texts.keys())[0] if contents.texts else None)
-            if ref_lang:
-                ref_fname, ref_bytes = contents.texts[ref_lang]
-                ref_sections = await asyncio.get_event_loop().run_in_executor(None, extract_sections, ref_bytes, ref_fname)
-                hint_lower = hint_name.strip().lower()
-                for sec in ref_sections:
-                    if hint_lower in sec.name.lower():
-                        locked_section_number = sec.number
-                        break
-
+        total = len(queue_items)
         conn.execute("UPDATE sessions SET total=? WHERE session_id=?", (total, session_id))
         conn.commit()
         _push_event(session_id, {"event": "start", "total": total, "engines": engines})
 
+        reference_lang = "en"
+        reference_text_name = ""
+        reference_sections = []
+        selected_reference = None
+        reference_selection_count = 0
+        missing_en_reference = "en" not in contents.texts
+
+        if not missing_en_reference:
+            reference_text_name, reference_bytes = contents.texts["en"]
+            reference_sections = await asyncio.get_event_loop().run_in_executor(
+                None, extract_sections, reference_bytes, reference_text_name
+            )
+
+            if locked_section_number is None and hint_name:
+                hint_lower = hint_name.strip().lower()
+                for sec in reference_sections:
+                    if hint_lower in sec.name.lower():
+                        locked_section_number = sec.number
+                        break
+
+            if locked_section_number is not None:
+                selected_reference = next((sec for sec in reference_sections if sec.number == locked_section_number), None)
+                if selected_reference is not None:
+                    reference_selection_count = 1
+
+        en_item_indices = [i for i, manifest_item in enumerate(queue_items) if (manifest_item.lang or "").lower() == "en"]
+        en_source_idx = en_item_indices[0] if en_item_indices else None
+        en_source_image_name = queue_items[en_source_idx].archive_path if en_source_idx is not None else None
+        en_source_ocr_results = None
+        en_source_best_text = ""
+
+        def _pick_best_text(results: Dict[str, object]) -> tuple[Optional[str], str, float]:
+            local_best_engine = None
+            local_best_text = ""
+            local_best_conf = -1.0
+            for eng, res in results.items():
+                if isinstance(res, dict):
+                    raw_conf = res.get("confidence")
+                    raw_text = res.get("text", "")
+                else:
+                    raw_conf = getattr(res, "confidence", None)
+                    raw_text = getattr(res, "text", "")
+
+                conf = float(raw_conf) if isinstance(raw_conf, (int, float)) else -1.0
+                text = raw_text if isinstance(raw_text, str) else ""
+
+                if conf > local_best_conf and text:
+                    local_best_conf = conf
+                    local_best_text = text
+                    local_best_engine = eng
+            return local_best_engine, local_best_text, local_best_conf
+
+        if en_source_image_name is not None:
+            try:
+                en_source_bytes = _read_archive_image(zip_bytes, en_source_image_name)
+                en_source_ocr_results = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    run_ocr_multi,
+                    en_source_bytes,
+                    engines,
+                )
+                _, en_source_best_text, _ = _pick_best_text(en_source_ocr_results)
+            except Exception:
+                en_source_ocr_results = None
+                en_source_best_text = ""
+
+        missing_en_ocr_text = not bool(en_source_best_text)
+
         pass_count = fail_count = manual_count = 0
 
-        for idx, lang in enumerate(langs):
-            image_bytes = contents.images[lang]
-            image_name = contents.image_names[lang]  # IMPORTANT: full archive path
+        for idx, item in enumerate(queue_items):
+            lang = item.lang or "und"
+            image_name = item.archive_path
 
-            # Store image bytes with the same key that results.image_name will use (for /image and /download joins)
+            try:
+                image_bytes = _read_archive_image(zip_bytes, image_name)
+            except Exception:
+                counters["images_skipped_total"] += 1
+                counters["images_skipped_by_reason"]["read_error"] = counters["images_skipped_by_reason"].get("read_error", 0) + 1
+                manual_count += 1
+                conn.execute(
+                    """INSERT INTO results
+                       (session_id, lang, image_name, text_name, ref_text,
+                        section_name, section_number, status, score, reason,
+                        ocr_results_json, best_engine, reference_confidence,
+                        reference_score_top1, reference_score_top2, reference_margin)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        session_id,
+                        lang,
+                        image_name,
+                        "",
+                        "",
+                        "",
+                        None,
+                        "MANUAL",
+                        0.0,
+                        "image_read_error",
+                        "{}",
+                        None,
+                        0.0,
+                        None,
+                        None,
+                        0.0,
+                    ),
+                )
+                conn.commit()
+                continue
+
             conn.execute(
                 "INSERT OR REPLACE INTO images VALUES (?,?,?)",
                 (session_id, image_name, image_bytes),
@@ -678,27 +810,24 @@ async def _process_session(
                 },
             )
 
-            ocr_results = await asyncio.get_event_loop().run_in_executor(None, run_ocr_multi, image_bytes, engines)
+            if idx == en_source_idx and en_source_ocr_results is not None:
+                ocr_results = en_source_ocr_results
+            else:
+                ocr_results = await asyncio.get_event_loop().run_in_executor(None, run_ocr_multi, image_bytes, engines)
 
-            # FIX: confidence can be None -> normalize before comparing
-            best_engine = None
-            best_text = ""
-            best_conf = -1.0
-            for eng, res in ocr_results.items():
-                conf = float(res.confidence) if isinstance(res.confidence, (int, float)) else -1.0
-                if conf > best_conf and res.text:
-                    best_conf = conf
-                    best_text = res.text
-                    best_engine = eng
+            best_engine, best_text, best_conf = _pick_best_text(ocr_results)
 
             ocr_results_display = {eng: clean_for_display(res.text) for eng, res in ocr_results.items()}
 
+            en_ocr_text = en_source_best_text
+
             logger.info(
-                "lang=%s best_engine=%s best_conf=%.3f ocr_len=%d",
+                "lang=%s best_engine=%s best_conf=%.3f ocr_len=%d en_ocr_len=%d",
                 lang,
                 best_engine,
                 best_conf,
                 len(best_text),
+                len(en_ocr_text),
             )
 
             ref_text = ""
@@ -706,17 +835,14 @@ async def _process_session(
             section_num_found = None
             status = "MANUAL"
             score_val = 0.0
-            reason = "no_text_file"
-            text_name = ""
+            reason = "missing_en_reference_text" if missing_en_reference else "missing_en_ocr_text"
+            text_name = reference_text_name
             reference_confidence = 0.0
             reference_score_top1 = None
             reference_score_top2 = None
             reference_margin = 0.0
 
-            if lang in contents.texts:
-                fname, file_bytes = contents.texts[lang]
-                text_name = fname
-
+            if not missing_en_reference:
                 _push_event(
                     session_id,
                     {
@@ -728,38 +854,52 @@ async def _process_session(
                     },
                 )
 
-                sections = await asyncio.get_event_loop().run_in_executor(None, extract_sections, file_bytes, fname)
+                if missing_en_ocr_text:
+                    reason = "missing_en_ocr_text"
+                else:
+                    if selected_reference is None:
+                        selection_once = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            select_best,
+                            reference_sections,
+                            en_ocr_text,
+                            "en",
+                            locked_section_number,
+                            hint_name,
+                        )
+                        if selection_once.best:
+                            selected_reference = selection_once.best.section
+                            locked_section_number = selected_reference.number
+                            reference_selection_count += 1
 
-                selection = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    select_best,
-                    sections,
-                    best_text,
-                    lang,
-                    locked_section_number,
-                    hint_name,
-                )
+                    if selected_reference is not None:
+                        selection = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            select_best,
+                            [selected_reference],
+                            en_ocr_text,
+                            "en",
+                            selected_reference.number,
+                            hint_name,
+                        )
 
-                status = selection.status
-                reason = selection.reason
-                reference_confidence = selection.reference_confidence
-                reference_score_top1 = selection.score_top1
-                reference_score_top2 = selection.score_top2
-                reference_margin = selection.confidence_margin
-                if selection.best:
-                    ref_text = clean_for_display(selection.best.section.content_text)
-                    section_name_found = selection.best.section.name
-                    section_num_found = selection.best.section.number
-                    score_val = selection.best.score
-
-                    if locked_section_number is None and section_num_found is not None:
-                        locked_section_number = section_num_found
+                        status = selection.status
+                        reason = selection.reason
+                        reference_confidence = selection.reference_confidence
+                        reference_score_top1 = selection.score_top1
+                        reference_score_top2 = selection.score_top2
+                        reference_margin = selection.confidence_margin
+                        if selection.best:
+                            ref_text = clean_for_display(selection.best.section.content_text)
+                            section_name_found = selection.best.section.name
+                            section_num_found = selection.best.section.number
+                            score_val = selection.best.score
+                    else:
+                        reason = "no_reference_section"
 
                 logger.info("lang=%s status=%s reason=%s section=%s", lang, status, reason, section_name_found)
-            else:
-                status = "MANUAL"
-                reason = "no_text_file"
 
+            counters["images_processed_total"] += 1
             if status == "PASS":
                 pass_count += 1
             else:
@@ -786,7 +926,7 @@ async def _process_session(
                 (
                     session_id,
                     lang,
-                    image_name,  # IMPORTANT: full archive path
+                    image_name,
                     text_name,
                     ref_text,
                     section_name_found,
@@ -810,17 +950,31 @@ async def _process_session(
                     "event": "item",
                     "idx": idx,
                     "lang": lang,
-                    "image_name": image_name,  # IMPORTANT: full archive path
+                    "image_name": image_name,
                     "status": status,
                     "best_engine": best_engine,
                 },
             )
 
+        session_meta = {
+            **counters,
+            "reference_lang_locked": "en",
+            "missing_en_reference": missing_en_reference,
+            "missing_en_ocr_text": missing_en_ocr_text,
+            "en_ocr_source_idx": en_source_idx,
+            "en_ocr_source_image_name": en_source_image_name,
+            "reference_selection_count": reference_selection_count,
+            "reference_section_number": (selected_reference.number if selected_reference else None),
+            "reference_section_name": (selected_reference.name if selected_reference else None),
+            "reference_text_lang": reference_lang,
+            "reference_text_name": reference_text_name,
+        }
+
         conn.execute(
             """UPDATE sessions SET status='done',
-               pass_count=?, fail_count=?, manual_count=?
+               pass_count=?, fail_count=?, manual_count=?, session_meta_json=?
                WHERE session_id=?""",
-            (pass_count, 0, manual_count, session_id),
+            (pass_count, 0, manual_count, json.dumps(session_meta, ensure_ascii=False), session_id),
         )
         conn.commit()
         _push_event(
@@ -831,8 +985,10 @@ async def _process_session(
                 "fail": 0,
                 "manual": manual_count,
                 "engines": engines,
+                "meta": session_meta,
             },
         )
+        log_event("run_zip_counters", run_id=session_id, **session_meta)
         log_event("run_end", run_id=session_id, status="ok")
 
     except Exception as exc:
@@ -923,6 +1079,14 @@ async def get_results(
         conn2.close()
     overall_reference_confidence = (float(total_sum) / float(total_count)) if total_count else 0.0
 
+    session_meta = {}
+    try:
+        raw_meta = session["session_meta_json"] if "session_meta_json" in session.keys() else None
+        if raw_meta:
+            session_meta = json.loads(raw_meta)
+    except Exception:
+        session_meta = {}
+
     return JSONResponse(
         {
             "session": {
@@ -934,6 +1098,7 @@ async def get_results(
                 "manual_count": session["manual_count"],
                 "engines": engines_list,
                 "overall_reference_confidence": round(overall_reference_confidence, 4),
+                "meta": session_meta,
             },
             "results": results,
             "page": page,
