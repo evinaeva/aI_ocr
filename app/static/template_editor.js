@@ -652,7 +652,10 @@
       if (m.event === 'done') {
         es.close();
         state.progressSource = null;
-        await loadResults();
+        const loaded = await loadResults();
+        if (loaded) {
+          setStatus('', '');
+        }
         $('progress-block').style.display = 'none';
         $('results-section').style.display = 'block';
       }
@@ -684,7 +687,7 @@
     if (!state.sessionId) {
       setStatus('Results', 'FAILED');
       showError('loadResults', 'No session_id. Start check first.');
-      return;
+      return false;
     }
 
     try {
@@ -694,7 +697,7 @@
 
       if (!resp.ok) {
         showError('loadResults', 'HTTP ' + resp.status + '\n' + text.slice(0, 1000));
-        return;
+        return false;
       }
 
       const data = JSON.parse(text);
@@ -705,8 +708,10 @@
       state.currentSessionMeta = data.session || null;
       renderResultsTable();
       updateErrorList();
+      return true;
     } catch (e) {
       showError('loadResults', String(e));
+      return false;
     }
   }
 
@@ -715,9 +720,16 @@
     tbody.innerHTML = '';
     const hidePass = $('hide-pass').checked;
     const visibleRows = hidePass ? state.currentResults.filter((r) => r.status !== 'PASS') : state.currentResults;
-    updateOverallReferenceConfidence();
+    const orderedRows = visibleRows
+      .map((row, originalIndex) => ({ row, originalIndex }))
+      .sort((a, b) => {
+        const aEn = isEnglishLang(a.row.lang) ? 1 : 0;
+        const bEn = isEnglishLang(b.row.lang) ? 1 : 0;
+        if (aEn !== bEn) return bEn - aEn;
+        return a.originalIndex - b.originalIndex;
+      });
 
-    for (const row of visibleRows) {
+    orderedRows.forEach(({ row }, rowIndex) => {
       const tr = document.createElement('tr');
       const lang = (row.lang || '').toLowerCase();
       const rtl = isRtl(lang) ? 'rtl' : 'ltr';
@@ -729,11 +741,11 @@
         <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}${renderConfidence(row, 'google')}</td>
         <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}${renderConfidence(row, 'azure')}</td>
         <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}${renderConfidence(row, 'ocrspace')}</td>
-        <td dir='${rtl}'>${esc(row.ref_text || '')}${renderReferenceConfidence(row)}</td>
+        <td dir='${rtl}'>${esc(row.ref_text || '')}${renderReferenceConfidence(row, rowIndex)}</td>
         <td class="status-cell" data-tooltip="${esc(statusReason)}"><span class="status-badge ${st === 'PASS' ? 'status-pass' : 'status-manual'}">${st}</span></td>
         <td>${reviewHtml(row, st)}</td>`;
       tbody.appendChild(tr);
-    }
+    });
 
     state.unresolvedCount = state.currentResults.filter((r) => r.status !== 'PASS' && !r.manual_decision).length;
     bindReviewButtons();
@@ -742,11 +754,13 @@
   }
 
   function renderConfidence(row, engine) {
+    if (engine === 'ocrspace') return '';
     const conf = extractConfidence(row, engine);
-    return `<span class="engine-confidence">confidence: ${conf === null ? '—' : conf.toFixed(2)}</span>`;
+    return `<span class="engine-confidence" dir="ltr">confidence: ${conf === null ? '—' : conf.toFixed(2)}</span>`;
   }
 
-  function renderReferenceConfidence(row) {
+  function renderReferenceConfidence(row, rowIndex) {
+    if (rowIndex !== 0) return '';
     const referenceBlock = row.reference || {};
     const candidates = [row.ref_confidence, row.reference_confidence, referenceBlock.confidence];
     const val = pickNumber(candidates);
@@ -765,7 +779,12 @@ score_top1=${s1 === null ? 'none' : s1.toFixed(2)}
 score_top2=${s2 === null ? 'none' : s2.toFixed(2)}
 margin=${(margin === null ? 0 : margin).toFixed(2)}`;
 
-    return `<span class="engine-confidence">confidence: ${val === null ? '—' : val.toFixed(2)}</span><span class="ref-confidence-badge ref-${band.toLowerCase()}" title="${esc(tooltip)}">${band}</span>`;
+    return `<span class="ref-confidence-badge ref-${band.toLowerCase()}" title="${esc(tooltip)}">${band}</span>`;
+  }
+
+  function isEnglishLang(lang) {
+    const norm = String(lang || '').toLowerCase().replace(/_/g, '-');
+    return norm.startsWith('en');
   }
 
   function extractConfidence(row, engine) {
@@ -785,14 +804,7 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
     return null;
   }
 
-  function updateOverallReferenceConfidence() {
-    const el = $('overall-reference-confidence');
-    if (!el) return;
-    const val = state.currentSessionMeta && typeof state.currentSessionMeta.overall_reference_confidence === 'number'
-      ? state.currentSessionMeta.overall_reference_confidence
-      : 0;
-    el.textContent = `Overall reference confidence: ${val.toFixed(2)}`;
-  }
+
 
   function getStatusReason(row, status) {
     const validationReason = row.validation?.reason || row.validation_reason || '';
