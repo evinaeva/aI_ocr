@@ -114,6 +114,15 @@ def _parse_google_full_text(full_text_annotation):
 
 
 def _parse_google_text_annotations(response) -> Optional[tuple]:
+    """
+    Parse TEXT_DETECTION response.
+    Extracts text from text_annotations[0].description.
+    Extracts confidence from full_text_annotation.pages[].blocks[] when
+    present — TEXT_DETECTION responses include full_text_annotation alongside
+    text_annotations, so block-level confidence is available without any
+    extra request parameter.
+    Returns (text, avg_confidence) or None if no text found.
+    """
     anns = getattr(response, "text_annotations", None)
     if not anns:
         return None
@@ -121,7 +130,22 @@ def _parse_google_text_annotations(response) -> Optional[tuple]:
     text = ((getattr(first, "description", "") or "").strip() if first else "")
     if not text:
         return None
-    return (text, None)
+
+    # Attempt to extract confidence from full_text_annotation blocks.
+    # full_text_annotation is populated by Google Vision for TEXT_DETECTION
+    # responses (same as DOCUMENT_TEXT_DETECTION), providing block.confidence
+    # values in range [0, 1]. We compute the arithmetic mean across all blocks.
+    avg_conf = None
+    full = getattr(response, "full_text_annotation", None)
+    if full and getattr(full, "pages", None):
+        confidences = []
+        for page in full.pages:
+            for block in page.blocks:
+                if block.confidence:
+                    confidences.append(block.confidence)
+        avg_conf = sum(confidences) / len(confidences) if confidences else None
+
+    return (text, avg_conf)
 
 def _google_feature_for_mode(vision, google_mode: Optional[str]):
     mode = (google_mode or "text").strip().lower()
