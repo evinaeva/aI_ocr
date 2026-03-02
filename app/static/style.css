@@ -874,7 +874,9 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 .progress-panel-title { margin-bottom: 8px; color: var(--text-secondary); }
 
 .results-controls { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.result-thumb-wrap { display: inline-flex; flex-direction: column; align-items: center; gap: 4px; }
 .result-thumb { width: 64px; height: 40px; object-fit: cover; border: 1px solid var(--border); border-radius: 6px; }
+.result-thumb-lang { font-size: .68rem; line-height: 1; color: var(--muted); text-transform: lowercase; }
 .status-badge { padding: 2px 8px; border-radius: 999px; font-size: .76rem; font-weight: 600; }
 .status-pass { color: #89e7ac; background: rgba(72,187,120,.18); }
 .status-manual { color: #ffd48a; background: rgba(246,173,85,.2); }
@@ -1009,17 +1011,18 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
   cursor: not-allowed;
 }
 
-.ref-confidence-badge.ref-medium[data-tooltip] {
+.ref-confidence-badge[data-tooltip] {
   position: relative;
 }
 
-.ref-confidence-badge.ref-medium[data-tooltip]::after,
-.ref-confidence-badge.ref-medium[data-tooltip]::before {
+.ref-confidence-badge[data-tooltip]::after,
+.ref-confidence-badge[data-tooltip]::before {
   opacity: 0;
   pointer-events: none;
 }
 
-.ref-confidence-badge.ref-medium[data-tooltip]:hover::after {
+.ref-confidence-badge[data-tooltip]:hover::after,
+.ref-confidence-badge[data-tooltip]:focus-visible::after {
   content: attr(data-tooltip);
   position: absolute;
   left: 50%;
@@ -1034,7 +1037,8 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
   z-index: 30;
 }
 
-.ref-confidence-badge.ref-medium[data-tooltip]:hover::before {
+.ref-confidence-badge[data-tooltip]:hover::before,
+.ref-confidence-badge[data-tooltip]:focus-visible::before {
   content: '';
   position: absolute;
   left: 50%;
@@ -1046,8 +1050,10 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
   z-index: 31;
 }
 
-.ref-confidence-badge.ref-medium[data-tooltip]:hover::after,
-.ref-confidence-badge.ref-medium[data-tooltip]:hover::before {
+.ref-confidence-badge[data-tooltip]:hover::after,
+.ref-confidence-badge[data-tooltip]:hover::before,
+.ref-confidence-badge[data-tooltip]:focus-visible::after,
+.ref-confidence-badge[data-tooltip]:focus-visible::before {
   opacity: 1;
 }
 
