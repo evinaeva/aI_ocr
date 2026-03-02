@@ -409,9 +409,10 @@ function applyLightboxTransform() {
 
 function fitLightboxToViewport() {
   if (!lightboxState.naturalWidth || !lightboxState.naturalHeight) return;
-  const maxW = window.innerWidth * 0.9;
-  const maxH = window.innerHeight * 0.9;
+  const maxW = Math.max(100, $lightboxStage.clientWidth);
+  const maxH = Math.max(100, $lightboxStage.clientHeight);
   lightboxState.baseScale = Math.min(1, maxW / lightboxState.naturalWidth, maxH / lightboxState.naturalHeight);
+  $lightboxImg.style.transformOrigin = 'top left';
   applyLightboxTransform();
 }
 
