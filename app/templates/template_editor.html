@@ -6,18 +6,20 @@
 <title>OCR Checker</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
-<body class="page-home">
+<body class="page-home page-editor">
 <header class="header">
-  <div class="header-inner">
-    <h1>🪄 OCR Checker</h1>
-    <div class="header-right-stack">
-      <nav class="header-links">
+  <div class="header-inner editor-header-inner">
+    <div class="editor-header-brand">
+      <h1>🪄 OCR Checker</h1>
+    </div>
+    <nav class="header-links editor-header-nav">
         <a href="/" class="header-link">Editor</a>
         <a href="/templates" class="header-link">Templates</a>
         <a href="/templates/preview" class="header-link">Preview</a>
         <a href="/about" class="header-link">About</a>
         <a href="/login" class="header-link">Login</a>
-      </nav>
+    </nav>
+    <div class="header-right-stack editor-header-usage">
       <aside id="engine-usage-widget" class="engine-usage-widget" aria-live="polite">
         <div class="engine-usage-title">API requests count:</div>
         <div id="engine-usage-month" class="engine-usage-month">Current month</div>
@@ -35,8 +37,8 @@
 <div class="card upload-card" id="upload-section">
   <h2 class="upload-title">Загрузить ZIP</h2>
   <p class="card-hint upload-subtitle">ZIP с папками images/ и texts/ или с вложенными ZIP</p>
-  <div class="topbar upload-form">
-    <div class="upload-drop-wrap">
+  <div class="topbar upload-form editor-upload-grid">
+    <div class="upload-drop-wrap editor-upload-field editor-upload-field-drop">
       <label for="zip-input">ZIP:</label>
       <div class="drop-zone editor-drop-zone">
         <div class="drop-zone-inner">
@@ -46,21 +48,33 @@
         <input type="file" id="zip-input" accept=".zip">
       </div>
     </div>
-    <label>Номер секции: <span class="hint-tag optional-badge">необязательно</span></label><input type="number" id="section-number" min="1" placeholder="7">
-    <label>Название секции: <span class="hint-tag optional-badge">необязательно</span></label><input type="text" id="section-name" placeholder="Banner">
-    <label>Шаблон:</label>
-    <select id="template-select">
-      <option value="">— выбрать сохранённый шаблон —</option>
-    </select>
-    <span id="template-match" class="template-match" style="display:none;">✅ есть совпадение по шаблонам</span>
-    <label id="template-auto-apply-wrap" class="template-auto-apply" style="display:none;">
-      <input type="checkbox" id="template-auto-apply" checked>
-      Применить этот шаблон автоматически
-    </label>
-    <span id="template-auto-apply-note" class="template-auto-apply-note" style="display:none;"></span>
-    <button class="btn btn-primary" id="btn-parse">Загрузить архив</button>
-    <button class="btn btn-primary" id="btn-check" disabled>Проверить локализацию</button>
-    <button class="btn btn-primary" id="btn-finish-top">Завершить</button>
+    <div class="editor-upload-field">
+      <label for="section-number">Номер секции: <span class="hint-tag optional-badge">необязательно</span></label>
+      <input type="number" id="section-number" min="1" placeholder="7">
+    </div>
+    <div class="editor-upload-field">
+      <label for="section-name">Название секции: <span class="hint-tag optional-badge">необязательно</span></label>
+      <input type="text" id="section-name" placeholder="Banner">
+    </div>
+    <div class="editor-upload-field">
+      <label for="template-select">Шаблон:</label>
+      <select id="template-select">
+        <option value="">— выбрать сохранённый шаблон —</option>
+      </select>
+    </div>
+    <div class="editor-template-meta">
+      <span id="template-match" class="template-match" style="display:none;">✅ есть совпадение по шаблонам</span>
+      <label id="template-auto-apply-wrap" class="template-auto-apply" style="display:none;">
+        <input type="checkbox" id="template-auto-apply" checked>
+        Применить этот шаблон автоматически
+      </label>
+      <span id="template-auto-apply-note" class="template-auto-apply-note" style="display:none;"></span>
+    </div>
+    <div class="editor-action-row">
+      <button class="btn btn-primary" id="btn-parse">Загрузить архив</button>
+      <button class="btn btn-primary" id="btn-check" disabled>Проверить локализацию</button>
+      <button class="btn btn-primary" id="btn-finish-top">Завершить</button>
+    </div>
   </div>
 </div>
 
