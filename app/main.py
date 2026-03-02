@@ -15,7 +15,7 @@ import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 from urllib.parse import unquote
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -687,6 +687,7 @@ async def _process_session(
         reference_lang = "en"
         reference_text_name = ""
         reference_sections = []
+        reference_sections_by_lang: Dict[str, List[Any]] = {}
         selected_reference = None
         reference_selection_count = 0
         missing_en_reference = "en" not in contents.texts
@@ -696,6 +697,7 @@ async def _process_session(
             reference_sections = await asyncio.get_event_loop().run_in_executor(
                 None, extract_sections, reference_bytes, reference_text_name
             )
+            reference_sections_by_lang["en"] = reference_sections
 
             if locked_section_number is None and hint_name:
                 hint_lower = hint_name.strip().lower()
@@ -715,23 +717,25 @@ async def _process_session(
         en_source_ocr_results = None
         en_source_best_text = ""
 
+        def _res_text(res: object) -> str:
+            raw_text = res.get("text", "") if isinstance(res, dict) else getattr(res, "text", "")
+            return raw_text if isinstance(raw_text, str) else ""
+
+        def _res_conf(res: object) -> Optional[float]:
+            raw_conf = res.get("confidence") if isinstance(res, dict) else getattr(res, "confidence", None)
+            return float(raw_conf) if isinstance(raw_conf, (int, float)) else None
+
         def _pick_best_text(results: Dict[str, object]) -> tuple[Optional[str], str, float]:
             local_best_engine = None
             local_best_text = ""
             local_best_conf = -1.0
             for eng, res in results.items():
-                if isinstance(res, dict):
-                    raw_conf = res.get("confidence")
-                    raw_text = res.get("text", "")
-                else:
-                    raw_conf = getattr(res, "confidence", None)
-                    raw_text = getattr(res, "text", "")
+                conf = _res_conf(res)
+                text = _res_text(res)
+                conf_val = conf if conf is not None else -1.0
 
-                conf = float(raw_conf) if isinstance(raw_conf, (int, float)) else -1.0
-                text = raw_text if isinstance(raw_text, str) else ""
-
-                if conf > local_best_conf and text:
-                    local_best_conf = conf
+                if conf_val > local_best_conf and text:
+                    local_best_conf = conf_val
                     local_best_text = text
                     local_best_engine = eng
             return local_best_engine, local_best_text, local_best_conf
@@ -817,7 +821,7 @@ async def _process_session(
 
             best_engine, best_text, best_conf = _pick_best_text(ocr_results)
 
-            ocr_results_display = {eng: clean_for_display(res.text) for eng, res in ocr_results.items()}
+            ocr_results_display = {eng: clean_for_display(_res_text(res)) for eng, res in ocr_results.items()}
 
             en_ocr_text = en_source_best_text
 
@@ -831,6 +835,8 @@ async def _process_session(
             )
 
             ref_text = ""
+            row_lang_norm = (lang or "").strip().lower()
+            display_lang = "en" if row_lang_norm.startswith("en") else (row_lang_norm or "und")
             section_name_found = ""
             section_num_found = None
             status = "MANUAL"
@@ -890,12 +896,45 @@ async def _process_session(
                         reference_score_top2 = selection.score_top2
                         reference_margin = selection.confidence_margin
                         if selection.best:
-                            ref_text = clean_for_display(selection.best.section.content_text)
                             section_name_found = selection.best.section.name
                             section_num_found = selection.best.section.number
                             score_val = selection.best.score
                     else:
                         reason = "no_reference_section"
+
+                    if selected_reference is not None:
+                        if display_lang not in reference_sections_by_lang:
+                            text_entry = contents.texts.get(display_lang)
+                            if text_entry is not None:
+                                section_text_name, section_bytes = text_entry
+                                section_list = await asyncio.get_event_loop().run_in_executor(
+                                    None, extract_sections, section_bytes, section_text_name
+                                )
+                            else:
+                                section_list = []
+                            reference_sections_by_lang[display_lang] = section_list
+
+                        localized_sections = reference_sections_by_lang.get(display_lang, [])
+
+                        def _section_number(section_obj: Any) -> Optional[int]:
+                            if isinstance(section_obj, dict):
+                                value = section_obj.get("number")
+                            else:
+                                value = getattr(section_obj, "number", None)
+                            return value if isinstance(value, int) else None
+
+                        def _section_content(section_obj: Any) -> str:
+                            if isinstance(section_obj, dict):
+                                value = section_obj.get("content_text", "")
+                            else:
+                                value = getattr(section_obj, "content_text", "")
+                            return value if isinstance(value, str) else ""
+
+                        localized_reference = next(
+                            (sec for sec in localized_sections if _section_number(sec) == selected_reference.number),
+                            None,
+                        )
+                        ref_text = clean_for_display(_section_content(localized_reference)) if localized_reference is not None else ""
 
                 logger.info("lang=%s status=%s reason=%s section=%s", lang, status, reason, section_name_found)
 
@@ -905,16 +944,17 @@ async def _process_session(
             else:
                 manual_count += 1
 
-            ocr_json = json.dumps(
-                {
-                    eng: {
-                        "text": ocr_results_display.get(eng, ""),
-                        "confidence": (round(ocr_results[eng].confidence, 4) if isinstance(ocr_results[eng].confidence, (int, float)) else None),
-                    }
-                    for eng in engines
-                    if eng in ocr_results
+            ocr_json_payload = {}
+            for eng in engines:
+                if eng not in ocr_results:
+                    continue
+                conf = _res_conf(ocr_results[eng])
+                ocr_json_payload[eng] = {
+                    "text": ocr_results_display.get(eng, ""),
+                    "confidence": (round(conf, 4) if conf is not None else None),
                 }
-            )
+
+            ocr_json = json.dumps(ocr_json_payload)
 
             conn.execute(
                 """INSERT INTO results
