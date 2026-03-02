@@ -18,8 +18,10 @@
     currentResults: [],
     currentSessionMeta: null,
     unresolvedCount: 0,
+    page: 1,
     progressSource: null,
     modalScale: 1,
+    modalBaseScale: 1,
     modalNaturalWidth: 0,
     modalNaturalHeight: 0,
     zipFilename: '',
@@ -67,6 +69,7 @@
   $('btn-clear-error').addEventListener('click', clearError);
   $('hide-pass').addEventListener('change', () => {
     if (!state.sessionId) return;
+    state.page = 1;
     renderResultsTable();
     updateErrorList();
     updateFinishButtons();
@@ -76,6 +79,9 @@
   $('btn-expand-results').addEventListener('click', expandResults);
   $('image-modal').addEventListener('click', (e) => {
     if (e.target.id === 'image-modal') closeImageModal();
+  });
+  $('image-modal-stage').addEventListener('click', (e) => {
+    if (e.target.id === 'image-modal-stage') closeImageModal();
   });
   $('image-modal-img').addEventListener('wheel', handleModalZoom, { passive: false });
   document.addEventListener('keydown', (e) => {
@@ -717,7 +723,9 @@
 
   function renderResultsTable() {
     const tbody = $('results-body');
+    const pagination = $('results-pagination');
     tbody.innerHTML = '';
+    pagination.innerHTML = '';
     const hidePass = $('hide-pass').checked;
     const visibleRows = hidePass ? state.currentResults.filter((r) => r.status !== 'PASS') : state.currentResults;
     const orderedRows = visibleRows
@@ -729,7 +737,14 @@
         return a.originalIndex - b.originalIndex;
       });
 
-    orderedRows.forEach(({ row }, rowIndex) => {
+    const perPage = 20;
+    const totalPages = Math.max(1, Math.ceil(orderedRows.length / perPage));
+    const currentPage = Math.min(Math.max(1, state.page || 1), totalPages);
+    state.page = currentPage;
+    const start = (currentPage - 1) * perPage;
+    const pagedRows = orderedRows.slice(start, start + perPage);
+
+    pagedRows.forEach(({ row }, rowIndex) => {
       const tr = document.createElement('tr');
       const lang = (row.lang || '').toLowerCase();
       const rtl = isRtl(lang) ? 'rtl' : 'ltr';
@@ -741,16 +756,46 @@
         <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}${renderConfidence(row, 'google')}</td>
         <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}${renderConfidence(row, 'azure')}</td>
         <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}${renderConfidence(row, 'ocrspace')}</td>
-        <td dir='${rtl}'>${esc(row.ref_text || '')}${renderReferenceConfidence(row, rowIndex)}</td>
+        <td dir='${rtl}'>${esc(row.ref_text || '')}${renderReferenceConfidence(row, start + rowIndex)}</td>
         <td class="status-cell" data-tooltip="${esc(statusReason)}"><span class="status-badge ${st === 'PASS' ? 'status-pass' : 'status-manual'}">${st}</span></td>
         <td>${reviewHtml(row, st)}</td>`;
       tbody.appendChild(tr);
     });
 
+    renderResultsPagination(currentPage, totalPages);
+
     state.unresolvedCount = state.currentResults.filter((r) => r.status !== 'PASS' && !r.manual_decision).length;
     bindReviewButtons();
     bindImageThumbnails();
     updateFinishButtons();
+  }
+
+  function renderResultsPagination(current, total) {
+    const pagination = $('results-pagination');
+    pagination.innerHTML = '';
+    if (total <= 1) return;
+
+    function makeBtn(label, page, disabled, active) {
+      const btn = document.createElement('button');
+      btn.className = 'page-btn' + (active ? ' active' : '');
+      btn.textContent = label;
+      btn.disabled = disabled;
+      if (!disabled) {
+        btn.addEventListener('click', () => {
+          state.page = page;
+          renderResultsTable();
+        });
+      }
+      return btn;
+    }
+
+    pagination.appendChild(makeBtn('«', 1, current === 1, false));
+    pagination.appendChild(makeBtn('‹', current - 1, current === 1, false));
+    for (let page = 1; page <= total; page++) {
+      pagination.appendChild(makeBtn(String(page), page, false, page === current));
+    }
+    pagination.appendChild(makeBtn('›', current + 1, current === total, false));
+    pagination.appendChild(makeBtn('»', total, current === total, false));
   }
 
   function renderConfidence(row, engine) {
@@ -779,7 +824,7 @@ score_top1=${s1 === null ? 'none' : s1.toFixed(2)}
 score_top2=${s2 === null ? 'none' : s2.toFixed(2)}
 margin=${(margin === null ? 0 : margin).toFixed(2)}`;
 
-    return `<span class="ref-confidence-badge ref-${band.toLowerCase()}" title="${esc(tooltip)}">${band}</span>`;
+    return `<span class="ref-confidence-badge ref-${band.toLowerCase()}" data-tooltip="${esc(tooltip)}">${band}</span>`;
   }
 
   function isEnglishLang(lang) {
@@ -885,6 +930,7 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
     state.targets = [];
     state.currentTarget = null;
     state.unresolvedCount = 0;
+    state.page = 1;
     state.image = null;
     state.selected = -1;
     state.drawing = null;
@@ -934,6 +980,7 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
   function openImageModal(src) {
     if (!src) return;
     state.modalScale = 1;
+    state.modalBaseScale = 1;
     state.modalNaturalWidth = 0;
     state.modalNaturalHeight = 0;
     const img = $('image-modal-img');
@@ -948,6 +995,11 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
       img.style.width = state.modalNaturalWidth + 'px';
       img.style.height = state.modalNaturalHeight + 'px';
       const stage = $('image-modal-stage');
+      const fitScale = Math.min(1, stage.clientWidth / state.modalNaturalWidth, stage.clientHeight / state.modalNaturalHeight);
+      state.modalBaseScale = fitScale;
+      state.modalScale = fitScale;
+      img.style.transformOrigin = 'top left';
+      img.style.transform = `scale(${fitScale})`;
       stage.scrollLeft = 0;
       stage.scrollTop = 0;
     };
@@ -963,6 +1015,7 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
     img.src = '';
     img.style.transform = 'scale(1)';
     state.modalScale = 1;
+    state.modalBaseScale = 1;
     state.modalNaturalWidth = 0;
     state.modalNaturalHeight = 0;
     document.body.style.overflow = '';

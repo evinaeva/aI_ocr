@@ -535,11 +535,11 @@ body {
 .lightbox-overlay.open { display: block; }
 .lightbox-stage {
   position: absolute;
-  inset: 5vh 5vw;
+  inset: 20px 30px;
   overflow: auto;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  align-items: flex-start;
+  justify-content: flex-start;
 }
 .lightbox-stage img {
   width: auto;
@@ -548,7 +548,7 @@ body {
   max-height: none;
   border-radius: 8px;
   box-shadow: 0 8px 40px rgba(0,0,0,.6);
-  transform-origin: center center;
+  transform-origin: top left;
   will-change: transform;
 }
 .lightbox-close {
@@ -772,7 +772,7 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
   inset: 20px 30px;
   overflow: auto;
   display: flex;
-  justify-content: center;
+  justify-content: flex-start;
   align-items: flex-start;
 }
 .image-modal-img {
@@ -811,6 +811,77 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 .ref-low {
   color: #fca5a5;
   background: rgba(252, 129, 129, .2);
+}
+
+.header-links a[href="/templates/preview"],
+.header-links a[href="/login"] {
+  display: none;
+}
+
+.results-pagination {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.results-pagination .page-btn {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.results-pagination .page-btn.active {
+  border-color: #60a5fa;
+}
+
+.results-pagination .page-btn:disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.ref-confidence-badge.ref-medium[data-tooltip] {
+  position: relative;
+}
+
+.ref-confidence-badge.ref-medium[data-tooltip]::after,
+.ref-confidence-badge.ref-medium[data-tooltip]::before {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ref-confidence-badge.ref-medium[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  white-space: pre;
+  background: rgba(6, 12, 24, 0.95);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 6px 9px;
+  z-index: 30;
+}
+
+.ref-confidence-badge.ref-medium[data-tooltip]:hover::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 2px);
+  transform: translateX(-50%);
+  border-width: 6px 6px 0 6px;
+  border-style: solid;
+  border-color: rgba(6, 12, 24, 0.95) transparent transparent transparent;
+  z-index: 31;
+}
+
+.ref-confidence-badge.ref-medium[data-tooltip]:hover::after,
+.ref-confidence-badge.ref-medium[data-tooltip]:hover::before {
+  opacity: 1;
 }
 
 /* about page */
