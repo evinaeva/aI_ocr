@@ -752,7 +752,7 @@
       const statusReason = getStatusReason(row, st);
       const imgUrl = `/image/${encodeURIComponent(state.sessionId)}/${encodeURIComponent(row.image_name || '')}`;
       tr.innerHTML = `
-        <td><img class="result-thumb js-modal-thumb" src="${imgUrl}" alt="${esc(row.image_name || '')}" data-full="${imgUrl}"></td>
+        <td><div class="result-thumb-wrap"><img class="result-thumb js-modal-thumb" src="${imgUrl}" alt="${esc(row.image_name || '')}" data-full="${imgUrl}"><div class="result-thumb-lang">${esc(getThumbLangCode(row.image_name || '', row.lang))}</div></div></td>
         <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}${renderConfidence(row, 'google')}</td>
         <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}${renderConfidence(row, 'azure')}</td>
         <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}${renderConfidence(row, 'ocrspace')}</td>
@@ -797,6 +797,24 @@
     pagination.appendChild(makeBtn('›', current + 1, current === total, false));
     pagination.appendChild(makeBtn('»', total, current === total, false));
   }
+
+
+  function normalizeLangForLabel(lang) {
+    const l = String(lang || '').toLowerCase();
+    const map = { cn: 'zh-hans', kr: 'ko', ua: 'uk' };
+    const norm = map[l] || l;
+    if (!norm) return 'und';
+    const alpha = norm.replace(/[^a-z]/g, '');
+    return alpha.length >= 2 ? alpha.slice(0, 2) : 'und';
+  }
+
+  function getThumbLangCode(imageName, rowLang) {
+    const preferred = normalizeLangForLabel(rowLang);
+    if (preferred !== 'und') return preferred;
+    const base = String(imageName || '').split('/').pop().split('\\').pop().replace(/\.[^.]+$/, '');
+    return normalizeLangForLabel(base);
+  }
+
 
   function renderConfidence(row, engine) {
     if (engine === 'ocrspace') return '';

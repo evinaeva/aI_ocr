@@ -267,7 +267,7 @@ function renderTable(rows, engines) {
         '<img class="thumb" src="' + imgSrc + '" alt="' + esc(row.image_name) + '" data-full="' + imgSrc + '">' +
         '<div class="thumb-missing" style="display:none">no image</div>' +
         '</div>' +
-        '<div class="thumb-label">' + esc((row.lang || '').toUpperCase()) + '</div>';
+        '<div class="thumb-label">' + esc(getThumbLangCode(row.image_name, row.lang)) + '</div>';
     } else {
       html += '<span style="color:var(--muted)">\u2014</span>';
     }
@@ -348,6 +348,23 @@ function formatText(text) {
   if (!lines.length) return '<span style="color:var(--muted)">\u2014</span>';
   return lines.map(l => '<span class="text-line">' + esc(l) + '</span>').join('');
 }
+
+function normalizeLangForLabel(lang) {
+  const l = String(lang || '').toLowerCase();
+  const map = { cn: 'zh-hans', kr: 'ko', ua: 'uk' };
+  const norm = map[l] || l;
+  if (!norm) return 'und';
+  const alpha = norm.replace(/[^a-z]/g, '');
+  return alpha.length >= 2 ? alpha.slice(0, 2) : 'und';
+}
+
+function getThumbLangCode(imageName, rowLang) {
+  const preferred = normalizeLangForLabel(rowLang);
+  if (preferred !== 'und') return preferred;
+  const base = String(imageName || '').split('/').pop().split('\\').pop().replace(/\.[^.]+$/, '');
+  return normalizeLangForLabel(base);
+}
+
 
 // ── Pagination ──────────────────────────────────────────────────────────
 function renderPagination(current, total) {
