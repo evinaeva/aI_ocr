@@ -35,15 +35,14 @@
 
 <main class="page-home-wrap">
 <div class="card upload-card" id="upload-section">
-  <h2 class="upload-title">Загрузить ZIP</h2>
-  <p class="card-hint upload-subtitle">ZIP с папками images/ и texts/ или с вложенными ZIP</p>
-  <div class="topbar upload-form editor-upload-grid">
+  <h2 class="upload-title" id="page-home-toggle" role="button" tabindex="0" aria-expanded="true">Загрузка и настройки</h2>
+  <div class="topbar upload-form editor-upload-grid page-home-collapsible">
     <div class="upload-drop-wrap editor-upload-field editor-upload-field-drop">
-      <label for="zip-input">ZIP:</label>
+      <label for="zip-input"></label>
       <div class="drop-zone editor-drop-zone">
         <div class="drop-zone-inner">
-          <span class="drop-icon">📂</span>
-          <span class="drop-file-text">Перетащите ZIP сюда или нажмите для выбора</span>
+          <span class="drop-icon">🗃️</span>
+          <span class="drop-file-text">Перетащите ZIP сюда или нажмите для выбора. Принимается ZIP с папками images/ и texts/ или с вложенными ZIP.</span>
         </div>
         <input type="file" id="zip-input" accept=".zip">
       </div>
@@ -73,12 +72,12 @@
     <div class="editor-action-row">
       <button class="btn btn-primary" id="btn-parse">Загрузить архив</button>
       <button class="btn btn-primary" id="btn-check" disabled>Проверить локализацию</button>
-      <button class="btn btn-primary" id="btn-finish-top">Завершить</button>
+      <button class="btn btn-primary" id="btn-finish-top">Отменить всё</button>
     </div>
   </div>
 </div>
 
-<div id="progress-block" class="progress-panel" style="display:none;">
+<div id="progress-block" class="progress-panel page-home-collapsible" style="display:none;">
   <div class="progress-panel-title">Проверка локализации</div>
   <div class="progress-bar-wrap"><div id="progress-bar" class="progress-bar"></div></div>
   <div class="progress-meta">
@@ -88,12 +87,12 @@
 </div>
 
 <!-- Status + Errors -->
-<div id="status-box" style="display:none;">
+<div id="status-box" class="page-home-collapsible" style="display:none;">
   <strong id="status-step"></strong>
   <span id="status-text" style="margin-left:8px;"></span>
 </div>
 
-<div id="error-box" style="display:none; border:1px solid #dc2626; padding:10px;">
+<div id="error-box" class="page-home-collapsible" style="display:none; border:1px solid #dc2626; padding:10px;">
   <div style="display:flex; justify-content:space-between;">
     <strong>Ошибка</strong>
     <button id="btn-clear-error" type="button">Clear</button>
@@ -130,7 +129,7 @@
     <label><input type="checkbox" id="hide-pass"> Hide PASS</label>
     <button class="btn btn-primary" id="btn-finish-bottom" disabled>показать косяки дизайнера</button>
   </div>
-  <table class="results-table"><thead><tr><th>img</th><th>gv</th><th>azure</th><th>ocr.space</th><th>reference</th><th>status</th><th>review</th></tr></thead><tbody id="results-body"></tbody></table>
+  <table class="results-table"><thead><tr><th>img</th><th>gv</th><th>azure</th><th>ocr.space</th><th id="reference-header">Reference</th><th>status</th><th>review</th></tr></thead><tbody id="results-body"></tbody></table>
   <div class="results-pagination" id="results-pagination"></div>
 </section>
 
