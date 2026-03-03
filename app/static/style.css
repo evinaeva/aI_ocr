@@ -551,6 +551,7 @@ body {
 
 /* Text columns */
 .text-cell {
+  /* Keep backend line breaks visible in table cells ("строка-в-строку"). */
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--mono);

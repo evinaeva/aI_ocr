@@ -687,6 +687,11 @@
     return zones.map((z) => z.text || '').join('');
   }
 
+  function normalizeTextForDisplay(value) {
+    if (typeof value !== 'string') return '';
+    return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  }
+
   async function loadResults() {
     clearError();
 
@@ -753,12 +758,22 @@
       const imgUrl = `/image/${encodeURIComponent(state.sessionId)}/${encodeURIComponent(row.image_name || '')}`;
       tr.innerHTML = `
         <td><div class="result-thumb-wrap"><img class="result-thumb js-modal-thumb" src="${imgUrl}" alt="${esc(row.image_name || '')}" data-full="${imgUrl}"><div class="result-thumb-lang">${esc(getThumbLangCode(row.image_name || '', row.lang))}</div></div></td>
-        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'google'))}${renderConfidence(row, 'google')}</td>
-        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'azure'))}${renderConfidence(row, 'azure')}</td>
-        <td dir='${rtl}'>${esc(aggregateEngineText(row, 'ocrspace'))}${renderConfidence(row, 'ocrspace')}</td>
-        <td dir='${rtl}'>${esc(row.ref_text || '')}${renderReferenceConfidence(row, start + rowIndex)}</td>
+        <td class="text-cell" dir='${rtl}' data-engine="google"></td>
+        <td class="text-cell" dir='${rtl}' data-engine="azure"></td>
+        <td class="text-cell" dir='${rtl}' data-engine="ocrspace"></td>
+        <td class="text-cell" dir='${rtl}' data-engine="reference"></td>
         <td class="status-cell" data-tooltip="${esc(statusReason)}"><span class="status-badge ${st === 'PASS' ? 'status-pass' : 'status-manual'}">${st}</span></td>
         <td>${reviewHtml(row, st)}</td>`;
+
+      ['google', 'azure', 'ocrspace'].forEach((engine) => {
+        const td = tr.querySelector(`td[data-engine="${engine}"]`);
+        td.textContent = normalizeTextForDisplay(aggregateEngineText(row, engine));
+        td.insertAdjacentHTML('beforeend', renderConfidence(row, engine));
+      });
+
+      const referenceTd = tr.querySelector('td[data-engine="reference"]');
+      referenceTd.textContent = normalizeTextForDisplay(row.ref_text || '');
+      referenceTd.insertAdjacentHTML('beforeend', renderReferenceConfidence(row, start + rowIndex));
       tbody.appendChild(tr);
     });
 
