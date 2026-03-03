@@ -927,6 +927,10 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
   max-width: 100%;
   margin: 12px 0 0;
 }
+
+#progress-outside-host {
+  margin-top: 8px;
+}
 .topbar #template-select { min-width: 260px; }
 .header-right-stack {
   margin-left: auto;
