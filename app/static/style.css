@@ -962,10 +962,26 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 .page-editor .sidebar { width:300px; background:#11192d; border-left:1px solid var(--border); display:flex; flex-direction:column; min-width: 220px; }
 .page-editor .sidebar-targets { width: 220px; flex: 0 0 220px; }
 .sidebar-section, #sidebar-form { padding:.85rem 1rem; border-bottom:1px solid var(--border); }
-.zone-row { display:flex; justify-content:space-between; padding:.45rem .6rem; border-radius:8px; }
+.zone-row { display:flex; align-items:center; justify-content:space-between; gap: .5rem; padding:.45rem .6rem; border-radius:8px; }
 .zone-row:hover, .zone-row.selected { background: rgba(108,99,255,.15); }
 .zone-name { color:#b8c7ff; font-family: var(--mono); font-size: .8rem; }
 .zone-type, .zones-empty, .canvas-msg { color: var(--text-secondary); font-size: .78rem; }
+.zone-mode-buttons { display: flex; flex-wrap: wrap; gap: .35rem; }
+.zone-mode-btn { border: 1px solid var(--border); }
+.zone-mode-btn.active { border-color: var(--accent); background: rgba(108,99,255,.25); color: #d8dcff; }
+.zone-delete-x {
+  width: 22px;
+  height: 22px;
+  border: 1px solid #dc2626;
+  border-radius: 6px;
+  background: rgba(220, 38, 38, .2);
+  color: #fca5a5;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.zone-delete-x:hover { background: rgba(220, 38, 38, .35); color: #fecaca; }
 .btn-full { width:100%; margin-top:.5rem; }
 
 .dot-google { background:#4285f4; }
