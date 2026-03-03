@@ -15,6 +15,7 @@ Image filename patterns:
 """
 
 import io
+import logging
 import re
 import zipfile
 from dataclasses import dataclass, field
@@ -65,6 +66,7 @@ _SIZE_RE   = re.compile(r"\d{2,4}x\d{2,4}")
 
 # Known brand/variant prefixes that appear before the real lang code
 _BRAND_PREFIXES = {"wl", "bonga", "bc", "bm", "vday"}
+logger = logging.getLogger(__name__)
 
 
 def _normalize_lang(code: str) -> str:
@@ -73,14 +75,30 @@ def _normalize_lang(code: str) -> str:
 
 
 def extract_lang_code(filename: str) -> Optional[str]:
-    """Extract and normalize language code from a filename (basename only)."""
+    """Extract and normalize language code from an archive path or filename."""
+    archive_path = filename
     name = filename.rsplit("/", 1)[-1]
     stem = name.rsplit(".", 1)[0] if "." in name else name
     stem_lower = stem.lower()
 
+    def _log_decision(raw_code: Optional[str], normalized: Optional[str], final_code: Optional[str]) -> Optional[str]:
+        logger.debug(
+            "lang_decision archive_path=%r filename=%r raw=%r normalized=%r final=%r",
+            archive_path,
+            name,
+            raw_code,
+            normalized,
+            final_code,
+        )
+        return final_code
+
     # Skip known non-language filenames
     if stem_lower in _NON_LANG:
-        return None
+        return _log_decision(None, None, None)
+
+    if re.fullmatch(r"[a-zA-Z]{2}", stem):
+        normalized = _normalize_lang(stem)
+        return _log_decision(stem, normalized, normalized)
 
     # Strip size pattern before matching (e.g. _1080x1920)
     stem_clean = _SIZE_RE.sub("", stem).rstrip("_- ")
@@ -91,7 +109,8 @@ def extract_lang_code(filename: str) -> Optional[str]:
         if tok in _BRAND_PREFIXES and i + 1 < len(tokens):
             candidate = tokens[i + 1]
             if candidate not in _NON_LANG and not re.match(r"^\d+$", candidate) and len(candidate) >= 2:
-                return _normalize_lang(candidate)
+                normalized = _normalize_lang(candidate)
+                return _log_decision(candidate, normalized, normalized)
 
     for pattern in _LANG_PATTERNS:
         m = pattern.search(stem_clean)
@@ -101,8 +120,9 @@ def extract_lang_code(filename: str) -> Optional[str]:
                 continue
             if re.match(r"^\d+$", code):
                 continue
-            return _normalize_lang(code)
-    return None
+            normalized = _normalize_lang(code)
+            return _log_decision(code, normalized, normalized)
+    return _log_decision(None, None, None)
 
 
 def _image_priority(path: str) -> int:
