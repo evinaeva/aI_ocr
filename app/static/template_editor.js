@@ -819,6 +819,8 @@
     const map = { cn: 'zh-hans', kr: 'ko', ua: 'uk' };
     const norm = map[l] || l;
     if (!norm) return 'und';
+    if (norm === 'und') return 'und';
+    if (/^[a-z]{2}$/.test(norm)) return norm;
     const alpha = norm.replace(/[^a-z]/g, '');
     return alpha.length >= 2 ? alpha.slice(0, 2) : 'und';
   }
