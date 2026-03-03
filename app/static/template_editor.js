@@ -58,6 +58,18 @@
     $('error-text').textContent = '';
   }
 
+  function showCheckProgressOutside() {
+    const host = $('progress-outside-host');
+    if (!host) return;
+    host.style.display = 'block';
+  }
+
+  function hideCheckProgressOutside() {
+    const host = $('progress-outside-host');
+    if (!host) return;
+    host.style.display = 'none';
+  }
+
   function zones() { return state.zonesByTarget[state.currentTarget] || []; }
   function ensureTarget(targetId) { state.zonesByTarget[targetId] = state.zonesByTarget[targetId] || []; }
 
@@ -644,7 +656,7 @@
     setStatus('Run Check', 'Starting...');
     $('editor-canvas').style.pointerEvents = 'none';
     $('editor-canvas').style.opacity = '0.75';
-    $('progress-block').style.display = 'block';
+    showCheckProgressOutside();
     document.querySelector('.editor-layout').style.display = 'none';
     $('results-section').style.display = 'none';
     $('final-errors').style.display = 'none';
@@ -697,7 +709,7 @@
         if (loaded) {
           setStatus('', '');
         }
-        $('progress-block').style.display = 'none';
+        hideCheckProgressOutside();
         $('results-section').style.display = 'block';
       }
     };
@@ -1043,7 +1055,7 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
     $('results-body').innerHTML = '';
     $('results-section').style.display = 'none';
     $('final-errors').style.display = 'none';
-    $('progress-block').style.display = 'none';
+    hideCheckProgressOutside();
     $('error-paths').textContent = '';
     $('targets-list').innerHTML = '';
     $('zones-list').innerHTML = '';
