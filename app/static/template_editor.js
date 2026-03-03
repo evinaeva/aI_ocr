@@ -573,14 +573,76 @@
     });
   }
 
+  function zoneMode(z) {
+    if (z.zone_type === 'logo') return 'logo';
+    if (z.google_mode === 'DOCUMENT_TEXT_DETECTION') return 'hard';
+    return 'easy';
+  }
+
+  function setZoneMode(z, mode) {
+    if (!z) return;
+    if (mode === 'logo') {
+      z.zone_type = 'logo';
+      return;
+    }
+    z.zone_type = 'text';
+    z.google_mode = mode === 'hard' ? 'DOCUMENT_TEXT_DETECTION' : 'TEXT_DETECTION';
+  }
+
   function renderZones() {
     const zl = $('zones-list');
     zl.innerHTML = '';
     zones().forEach((z, i) => {
       const row = document.createElement('div');
       row.className = 'zone-row';
-      row.innerHTML = `<button class='btn btn-xs'>${esc(z.name)}</button> ${esc(z.zone_type)}`;
-      row.querySelector('button').onclick = () => { state.selected = i; syncForm(); draw(); };
+      row.classList.toggle('selected', i === state.selected);
+
+      const modeButtons = document.createElement('div');
+      modeButtons.className = 'zone-mode-buttons';
+
+      const currentMode = zoneMode(z);
+      const makeButton = (label, mode) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'btn btn-xs zone-mode-btn';
+        if (currentMode === mode) button.classList.add('active');
+        button.textContent = label;
+        button.onclick = (e) => {
+          e.stopPropagation();
+          state.selected = i;
+          setZoneMode(z, mode);
+          markManualZoneChange();
+          renderZones();
+          draw();
+        };
+        return button;
+      };
+
+      modeButtons.appendChild(makeButton('Logo', 'logo'));
+      modeButtons.appendChild(makeButton('Easy Text', 'easy'));
+      modeButtons.appendChild(makeButton('Hard Text', 'hard'));
+
+      const deleteBtn = document.createElement('button');
+      deleteBtn.type = 'button';
+      deleteBtn.className = 'zone-delete-x';
+      deleteBtn.textContent = 'X';
+      deleteBtn.setAttribute('aria-label', 'Delete zone');
+      deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        zones().splice(i, 1);
+        markManualZoneChange();
+        if (state.selected === i) {
+          state.selected = -1;
+        } else if (state.selected > i) {
+          state.selected -= 1;
+        }
+        renderZones();
+        draw();
+      };
+
+      row.onclick = () => { state.selected = i; renderZones(); draw(); };
+      row.appendChild(modeButtons);
+      row.appendChild(deleteBtn);
       zl.appendChild(row);
     });
     syncForm();
@@ -589,45 +651,8 @@
   }
 
   function syncForm() {
-    const z = zones()[state.selected];
-    $('sidebar-form').style.display = z ? 'block' : 'none';
-    if (!z) return;
-    $('sf-name').value = z.name;
-    $('sf-type').value = z.zone_type;
-    $('sf-google-mode').value = z.google_mode;
-    $('sf-bbox').value = `[${z.bbox.join(', ')}]`;
-    $('google-mode-row').style.display = z.zone_type === 'text' ? 'block' : 'none';
+    $('sidebar-form').style.display = 'none';
   }
-
-  $('sf-name').addEventListener('input', () => {
-    const z = zones()[state.selected];
-    if (!z) return;
-    z.name = $('sf-name').value;
-    markManualZoneChange();
-    renderZones();
-  });
-  $('sf-type').addEventListener('change', () => {
-    const z = zones()[state.selected];
-    if (!z) return;
-    z.zone_type = $('sf-type').value;
-    markManualZoneChange();
-    syncForm();
-    renderZones();
-  });
-  $('sf-google-mode').addEventListener('change', () => {
-    const z = zones()[state.selected];
-    if (!z) return;
-    z.google_mode = $('sf-google-mode').value;
-    markManualZoneChange();
-  });
-  $('btn-delete-zone').addEventListener('click', () => {
-    if (state.selected < 0) return;
-    zones().splice(state.selected, 1);
-    markManualZoneChange();
-    state.selected = -1;
-    renderZones();
-    draw();
-  });
 
   async function startCheck() {
     togglePageHomeWrap(true);
