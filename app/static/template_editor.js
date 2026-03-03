@@ -63,6 +63,17 @@
 
   $('btn-parse').addEventListener('click', parseZip);
   $('btn-check').addEventListener('click', startCheck);
+  $('zip-input').addEventListener('change', updateZipFilenameLabel);
+  const homeToggle = $('page-home-toggle');
+  if (homeToggle) {
+    homeToggle.addEventListener('click', togglePageHomeWrap);
+    homeToggle.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        togglePageHomeWrap();
+      }
+    });
+  }
   $('template-select').addEventListener('change', onTemplateSelect);
   const autoApplyCheckbox = $('template-auto-apply');
   if (autoApplyCheckbox) autoApplyCheckbox.addEventListener('change', onAutoApplyToggle);
@@ -154,6 +165,29 @@
       setStatus('Parse ZIP', 'FAILED');
       showError('parseZip', String(e));
     }
+  }
+
+  function updateZipFilenameLabel() {
+    const file = $('zip-input').files[0];
+    const textEl = document.querySelector('.drop-file-text');
+    const zone = document.querySelector('.editor-drop-zone');
+    if (!textEl || !zone) return;
+    if (file && file.name) {
+      textEl.textContent = `Архив загружен: ${file.name}`;
+      zone.classList.add('has-file');
+      return;
+    }
+    textEl.textContent = 'Перетащите ZIP сюда или нажмите для выбора. Принимается ZIP с папками images/ и texts/ или с вложенными ZIP.';
+    zone.classList.remove('has-file');
+  }
+
+  function togglePageHomeWrap(forceCollapse) {
+    const wrap = document.querySelector('.page-home-wrap');
+    const title = $('page-home-toggle');
+    if (!wrap || !title) return;
+    const collapse = typeof forceCollapse === 'boolean' ? forceCollapse : !wrap.classList.contains('collapsed');
+    wrap.classList.toggle('collapsed', collapse);
+    title.setAttribute('aria-expanded', collapse ? 'false' : 'true');
   }
 
   function _phase2Meta(targetId, zoneName) {
@@ -584,6 +618,7 @@
   });
 
   async function startCheck() {
+    togglePageHomeWrap(true);
     clearError();
 
     if (!state.uploadId) {
@@ -627,7 +662,7 @@
 
       const data = JSON.parse(text);
       state.sessionId = data.session_id;
-      setStatus('Run Check', 'Session started. Waiting for SSE...');
+      setStatus('Run Check', '');
       subscribeSSE();
     } catch (e) {
       setStatus('Run Check', 'FAILED');
@@ -692,6 +727,24 @@
     return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   }
 
+  function getSessionReferenceBadgeRow() {
+    const meta = state.currentSessionMeta || {};
+    const confidence = pickNumber([
+      meta.overall_reference_confidence,
+      meta.reference_confidence,
+      meta.ref_confidence,
+      meta.reference_choice_confidence,
+      meta.ref_choice_confidence,
+      meta.reference_selection_confidence,
+    ]);
+    if (confidence === null) return null;
+    return {
+      ref_confidence: confidence,
+      reference_confidence: confidence,
+      reference: { confidence },
+    };
+  }
+
   async function loadResults() {
     clearError();
 
@@ -748,8 +801,15 @@
     state.page = currentPage;
     const start = (currentPage - 1) * perPage;
     const pagedRows = orderedRows.slice(start, start + perPage);
+    const referenceHeader = $('reference-header');
+    if (referenceHeader) {
+      const sessionReferenceRow = getSessionReferenceBadgeRow();
+      referenceHeader.innerHTML = sessionReferenceRow
+        ? `Reference ${renderReferenceConfidence(sessionReferenceRow, 0)}`
+        : 'Reference';
+    }
 
-    pagedRows.forEach(({ row }, rowIndex) => {
+    pagedRows.forEach(({ row }) => {
       const tr = document.createElement('tr');
       const lang = (row.lang || '').toLowerCase();
       const rtl = isRtl(lang) ? 'rtl' : 'ltr';
@@ -773,7 +833,6 @@
 
       const referenceTd = tr.querySelector('td[data-engine="reference"]');
       referenceTd.textContent = normalizeTextForDisplay(row.ref_text || '');
-      referenceTd.insertAdjacentHTML('beforeend', renderReferenceConfidence(row, start + rowIndex));
       tbody.appendChild(tr);
     });
 
@@ -799,6 +858,10 @@
         btn.addEventListener('click', () => {
           state.page = page;
           renderResultsTable();
+          const hidePassLabel = document.querySelector('label[for="hide-pass"], .results-controls label');
+          if (hidePassLabel && typeof hidePassLabel.scrollIntoView === 'function') {
+            hidePassLabel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
         });
       }
       return btn;
@@ -879,7 +942,7 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
 
   function pickNumber(values) {
     for (const val of values) {
-      if (typeof val === 'number') return val;
+      if (typeof val === 'number' && Number.isFinite(val)) return val;
     }
     return null;
   }

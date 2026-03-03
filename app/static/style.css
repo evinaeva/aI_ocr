@@ -904,7 +904,9 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
 .topbar { display:flex; gap:.6rem; flex-wrap:wrap; align-items:center; margin-bottom: 1rem; padding-left: 20px; }
 .page-home-wrap .topbar { padding-left: 0; margin-bottom: 0; }
 .page-home-wrap .upload-drop-wrap { flex: 1 1 100%; }
-.page-home-wrap .upload-drop-wrap > label { display: inline-block; margin-bottom: 8px; color: #d7dded; font-size: .84rem; }
+.page-home-wrap .upload-title[role="button"] { cursor: pointer; user-select: none; }
+.page-home-wrap.collapsed .page-home-collapsible { display: none !important; }
+.page-home-wrap .upload-drop-wrap > label { display: none; }
 .page-home-wrap .editor-drop-zone { margin-bottom: 0; position: relative; }
 .page-home-wrap .topbar > label { color: #d7dded; font-size: .84rem; display: inline-flex; align-items: center; gap: 8px; }
 .page-home-wrap .topbar > input,
