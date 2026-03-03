@@ -44,11 +44,13 @@ from app.logging_utils import log_event
 from app.pipeline import template_store
 from app.pipeline.models import ZoneDef
 from app.pipeline.ocr_dispatcher import dispatch_zone_ocr
+from app.pipeline.ocr_dispatcher import ZoneEngineResult
 from app.pipeline.consensus import resolve_consensus
 from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
 from app.pipeline.firestore_store import is_persistence_enabled
 from app.pipeline.persistence import persist_run
 from app.pipeline.logo_matcher import match_logo_zone
+from app.pipeline.preprocessor import load_image, maybe_upscale, scale_bbox, crop_zone_to_png
 from app.ocr import (
     google_batch_annotate_images,
     _google_cache_put,
@@ -65,50 +67,22 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
     to current image dimensions (after optional whole-image upscale).
     Returns PNG bytes.
     """
-    img = Image.open(io.BytesIO(image_bytes))
-    img_w, img_h = img.size
+    img = load_image(image_bytes)
+    img, _ = maybe_upscale(img)
 
-    # 1) Whole-image upscale BEFORE crop (per spec).
-    if img_w < 1024 or img_h < 768:
-        scale = max(1024 / max(1, img_w), 768 / max(1, img_h))
-        new_w = max(1, int(round(img_w * scale)))
-        new_h = max(1, int(round(img_h * scale)))
-        img = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        img_w, img_h = img.size
-
-    # 2) Scale bbox from template reference space (source_size) -> current img px.
-    # Defensive guards: avoid crashes on malformed source_size.
     try:
         src_w = int(source_size[0])
         src_h = int(source_size[1])
     except Exception:
-        src_w, src_h = img_w, img_h
+        src_w, src_h = img.width, img.height
 
-    src_w = max(1, src_w)
-    src_h = max(1, src_h)
+    bbox_scaled = scale_bbox(zone.bbox, [max(1, src_w), max(1, src_h)], [img.width, img.height])
+    return _guard_png_size(crop_zone_to_png(img, bbox_scaled))
 
-    scale_x = img_w / src_w
-    scale_y = img_h / src_h
 
-    x1, y1, x2, y2 = zone.bbox
-    px1 = int(x1 * scale_x)
-    py1 = int(y1 * scale_y)
-    px2 = int(x2 * scale_x)
-    py2 = int(y2 * scale_y)
-
-    px1 = max(0, min(px1, img_w))
-    py1 = max(0, min(py1, img_h))
-    px2 = max(0, min(px2, img_w))
-    py2 = max(0, min(py2, img_h))
-
-    cropped = img.crop((px1, py1, px2, py2))
-
-    buf = io.BytesIO()
-    cropped.save(buf, format="PNG")
-    buf.seek(0)
-    cropped.close()
-    img.close()
-    return _guard_png_size(buf.getvalue())
+def _png_dimensions(payload: bytes) -> tuple[int, int]:
+    with Image.open(io.BytesIO(payload)) as img:
+        return img.width, img.height
 
 
 def _guard_png_size(payload: bytes) -> bytes:
@@ -174,7 +148,14 @@ def _prefetch_google_batch(
         try:
             zb = _crop_zone(image_bytes, zone, source_size)
         except Exception:
-            zb = image_bytes
+            log_event(
+                "zone_crop_failed",
+                zone_index=i,
+                zone_name=zone.name,
+                engine="google",
+                source="crop",
+            )
+            continue
 
         google_mode = (zone.engine_config or {}).get("google_mode")
         mode_key = (google_mode or "text").strip().lower()
@@ -289,7 +270,7 @@ async def run_template(
                 try:
                     zone_bytes = _crop_zone(image_bytes, zone, tmpl.source_size)
                 except Exception:
-                    zone_bytes = image_bytes
+                    zone_bytes = None
 
             if zone.type == "logo":
                 # Logo branch: OpenCV only, OCR dispatcher is never called.
@@ -304,9 +285,41 @@ async def run_template(
                     reason=consensus.get("reason"),
                 )
             else:
-                engine_results = await asyncio.to_thread(
-                    dispatch_zone_ocr, zone, zone_bytes
-                )
+                if zone_bytes is None:
+                    log_event(
+                        "zone_crop_failed",
+                        run_id=run_id,
+                        zone_index=i,
+                        zone_name=zone.name,
+                        source="crop",
+                    )
+                    engine_results = [
+                        ZoneEngineResult(
+                            engine=engine_name,
+                            text="",
+                            confidence=None,
+                            latency_ms=0.0,
+                            error="engine_exception",
+                        )
+                        for engine_name in zone.engines
+                    ]
+                else:
+                    crop_width, crop_height = _png_dimensions(zone_bytes)
+                    for engine_name in zone.engines:
+                        log_event(
+                            "ocr_payload",
+                            run_id=run_id,
+                            zone_index=i,
+                            zone_name=zone.name,
+                            engine=engine_name,
+                            source="crop",
+                            crop_width=crop_width,
+                            crop_height=crop_height,
+                        )
+
+                    engine_results = await asyncio.to_thread(
+                        dispatch_zone_ocr, zone, zone_bytes
+                    )
 
                 consensus = resolve_consensus(
                     engine_results=engine_results,
