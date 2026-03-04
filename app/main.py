@@ -8,6 +8,7 @@ import hmac
 import io
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
@@ -32,7 +33,15 @@ from fastapi.templating import Jinja2Templates
 from .logging_utils import log_event
 from .metrics.engine_usage import get_current_month_usage, init_engine_usage_metrics
 from .normalizer import clean_for_display, normalize_strict
-from .ocr import ALL_ENGINES, emit_startup_warnings, run_ocr_multi
+from .ocr import (
+    ALL_ENGINES,
+    OCRResult,
+    _google_cache_clear,
+    _google_cache_put,
+    emit_startup_warnings,
+    google_batch_annotate_images,
+    run_ocr_multi,
+)
 from .pipeline import template_store
 from .pipeline.batch_routes import batch_router  # P2.4: v2-batch job orchestration
 from .pipeline.history_routes import history_router  # always imported — see Phase 6 fix
@@ -636,6 +645,67 @@ def _start_session_from_zip(
     return session_id
 
 
+def _prefetch_google_for_zip_items(
+    queue_items: List[Any],
+    zip_bytes: bytes,
+    engines: List[str],
+) -> tuple[Dict[int, bytes], set[int], List[int]]:
+    """
+    Pre-read ZIP images and prefetch Google OCR in batch for ZIP/phase2 runs.
+
+    Returns:
+      - preloaded image bytes by queue index,
+      - indices with image read failure,
+      - cache keys (id(image_bytes)) that were injected and must be cleared.
+
+    Never raises.
+    """
+    preloaded_images: Dict[int, bytes] = {}
+    read_failed_indices: set[int] = set()
+    google_cache_ids: List[int] = []
+
+    google_enabled = "google" in engines
+    google_jobs: List[tuple[int, bytes]] = []
+
+    for idx, item in enumerate(queue_items):
+        try:
+            image_bytes = _read_archive_image(zip_bytes, item.archive_path)
+        except Exception:
+            read_failed_indices.add(idx)
+            continue
+
+        preloaded_images[idx] = image_bytes
+        if google_enabled:
+            google_jobs.append((idx, image_bytes))
+
+    if not google_enabled or not google_jobs:
+        return preloaded_images, read_failed_indices, google_cache_ids
+
+    logger.info(
+        "zip_google_batch_v2 items=%d chunks=%d",
+        len(google_jobs),
+        math.ceil(len(google_jobs) / 16),
+    )
+
+    inserted_ids: List[int] = []
+    try:
+        batch_results = google_batch_annotate_images([img for _, img in google_jobs])
+        while len(batch_results) < len(google_jobs):
+            batch_results.append(OCRResult("", 0.0, "google"))
+
+        for (_, image_bytes), result in zip(google_jobs, batch_results):
+            _google_cache_put(image_bytes, result)
+            inserted_ids.append(id(image_bytes))
+
+        google_cache_ids = inserted_ids
+    except Exception:
+        if inserted_ids:
+            _google_cache_clear(inserted_ids)
+        logger.warning("zip_google_batch_v2 prefetch_failed fallback=single_google")
+
+    return preloaded_images, read_failed_indices, google_cache_ids
+
+
 _VALID_ENGINES = set(ALL_ENGINES)
 
 
@@ -665,6 +735,7 @@ async def _process_session(
     conn = get_db()
     conn.execute("UPDATE sessions SET status='processing' WHERE session_id=?", (session_id,))
     conn.commit()
+    google_cache_ids: List[int] = []
 
     locked_section_number: Optional[int] = hint_number
     archive_label = f"session:{session_id}"
@@ -675,6 +746,11 @@ async def _process_session(
         contents = process_zip(zip_bytes)
         manifest = build_zip_manifest(zip_bytes)
         queue_items = [item for target in manifest for item in target.items]
+        preloaded_images, read_failed_indices, google_cache_ids = _prefetch_google_for_zip_items(
+            queue_items,
+            zip_bytes,
+            engines,
+        )
         counters = _collect_zip_debug_counters(zip_bytes)
         counters["images_detected_total"] = len(queue_items)
         counters["images_queued_total"] = len(queue_items)
@@ -742,7 +818,9 @@ async def _process_session(
 
         if en_source_image_name is not None:
             try:
-                en_source_bytes = _read_archive_image(zip_bytes, en_source_image_name)
+                en_source_bytes = preloaded_images.get(en_source_idx) if en_source_idx is not None else None
+                if en_source_bytes is None:
+                    en_source_bytes = _read_archive_image(zip_bytes, en_source_image_name)
                 en_source_ocr_results = await asyncio.get_event_loop().run_in_executor(
                     None,
                     run_ocr_multi,
@@ -762,9 +840,8 @@ async def _process_session(
             lang = item.lang or "und"
             image_name = item.archive_path
 
-            try:
-                image_bytes = _read_archive_image(zip_bytes, image_name)
-            except Exception:
+            image_bytes = preloaded_images.get(idx)
+            if image_bytes is None and idx in read_failed_indices:
                 counters["images_skipped_total"] += 1
                 counters["images_skipped_by_reason"]["read_error"] = counters["images_skipped_by_reason"].get("read_error", 0) + 1
                 manual_count += 1
@@ -796,6 +873,42 @@ async def _process_session(
                 )
                 conn.commit()
                 continue
+
+            if image_bytes is None:
+                try:
+                    image_bytes = _read_archive_image(zip_bytes, image_name)
+                except Exception:
+                    counters["images_skipped_total"] += 1
+                    counters["images_skipped_by_reason"]["read_error"] = counters["images_skipped_by_reason"].get("read_error", 0) + 1
+                    manual_count += 1
+                    conn.execute(
+                        """INSERT INTO results
+                           (session_id, lang, image_name, text_name, ref_text,
+                            section_name, section_number, status, score, reason,
+                            ocr_results_json, best_engine, reference_confidence,
+                            reference_score_top1, reference_score_top2, reference_margin)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            session_id,
+                            lang,
+                            image_name,
+                            "",
+                            "",
+                            "",
+                            None,
+                            "MANUAL",
+                            0.0,
+                            "image_read_error",
+                            "{}",
+                            None,
+                            0.0,
+                            None,
+                            None,
+                            0.0,
+                        ),
+                    )
+                    conn.commit()
+                    continue
 
             conn.execute(
                 "INSERT OR REPLACE INTO images VALUES (?,?,?)",
@@ -1038,6 +1151,8 @@ async def _process_session(
         _push_event(session_id, {"event": "error", "message": str(exc)})
         log_event("run_end", run_id=session_id, status="error")
     finally:
+        if google_cache_ids:
+            _google_cache_clear(google_cache_ids)
         conn.close()
 
 
