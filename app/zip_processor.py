@@ -23,13 +23,14 @@ from typing import Dict, Optional
 
 # ── Language whitelist and tokenization helpers ─────────────────────────────
 _SUPPORTED_LANG_CODES = {
+    'zn',
     'ar', 'az', 'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'et', 'fa', 'fi', 'fr',
     'he', 'hi', 'hr', 'hu', 'hy', 'id', 'it', 'ja', 'ka', 'kk', 'ko', 'lt', 'lv',
     'nl', 'no', 'pl', 'pt', 'ro', 'ru', 'sk', 'sl', 'sr', 'sv', 'th', 'tr', 'uk',
     'ur', 'vi', 'zh', 'cn', 'kr', 'il', 'in', 'gr', 'se', 'dk', 'ua', 'ee', 'kz',
     'rs', 'cz', 'jp', 'si',
 }
-_COMPOSITE_LANG_CODES = {'zh-hans', 'zh-hant', 'pt-pt', 'sr-latn', 'az-latn'}
+_COMPOSITE_LANG_CODES = {'zh-hans', 'zh-hant', 'pt-pt', 'sr-latn', 'az-latn', 'kk-cyrl', 'mk-mk'}
 _TOKEN_SPLIT_RE = re.compile(r"[^a-zA-Z]+")
 
 # Tokens that look like lang codes but aren't
@@ -42,8 +43,9 @@ _NON_LANG = {
 
 # Image-specific shortened codes → standard codes (to match DOCX lang codes)
 _LANG_NORMALIZE = {
-    "cn":  "zh-hans",
-    "zh":  "zh-hans",
+    "cn":  "zh",
+    "zh":  "zh",
+    "zn":  "zh",
     "kr":  "ko",
     "il":  "he",
     "in":  "hi",
@@ -57,8 +59,8 @@ _LANG_NORMALIZE = {
     "sr":  "sr-latn",
     "cz":  "cs",
     "jp":  "ja",
-    "pt":  "pt-pt",
-    "az":  "az-latn",
+    "pt":  "pt",
+    "az":  "az",
     "si":  "sl",
 }
 
@@ -94,7 +96,7 @@ def extract_lang_code(filename: str) -> Optional[str]:
         )
         return final_code
 
-    if stem_lower in _NON_LANG:
+    if stem_lower in _NON_LANG and stem_lower not in _SUPPORTED_LANG_CODES:
         return _log_decision(None, None, None)
 
     if re.fullmatch(r"[a-zA-Z]{2}", stem):
@@ -122,6 +124,12 @@ def extract_lang_code(filename: str) -> Optional[str]:
         if tok in _SUPPORTED_LANG_CODES:
             normalized = _normalize_lang(tok)
             return _log_decision(tok, normalized, normalized)
+
+    if tokens:
+        last_two = '-'.join(tokens[-2:]) if len(tokens) >= 2 else None
+        if last_two and last_two in _COMPOSITE_LANG_CODES:
+            normalized = _normalize_lang(last_two)
+            return _log_decision(last_two, normalized, normalized)
 
     return _log_decision(None, None, None)
 
