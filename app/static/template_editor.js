@@ -856,13 +856,13 @@
       tr.innerHTML = `
         <td><div class="result-thumb-wrap"><img class="result-thumb js-modal-thumb" src="${imgUrl}" alt="${esc(row.image_name || '')}" data-full="${imgUrl}"><div class="result-thumb-lang">${esc(getThumbLangCode(row.image_name || '', row.lang))}</div></div></td>
         <td class="text-cell" dir='${rtl}' data-engine="google"></td>
-        <td class="text-cell" dir='${rtl}' data-engine="azure"></td>
+        <!-- <td class="text-cell" dir='${rtl}' data-engine="azure"></td> -->
         <td class="text-cell" dir='${rtl}' data-engine="ocrspace"></td>
         <td class="text-cell" dir='${rtl}' data-engine="reference"></td>
         <td class="status-cell" data-tooltip="${esc(statusReason)}"><span class="status-badge ${st === 'PASS' ? 'status-pass' : 'status-manual'}">${st}</span></td>
         <td>${reviewHtml(row, st)}</td>`;
 
-      ['google', 'azure', 'ocrspace'].forEach((engine) => {
+      ['google', 'ocrspace'].forEach((engine) => {
         const td = tr.querySelector(`td[data-engine="${engine}"]`);
         td.textContent = normalizeTextForDisplay(aggregateEngineText(row, engine));
         td.insertAdjacentHTML('beforeend', renderConfidence(row, engine));
