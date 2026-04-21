@@ -21,14 +21,16 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-# ── Lang patterns (tried in order, first match wins) ─────────────────────────
-_LANG_PATTERNS = [
-    re.compile(r"\(([a-zA-Z]{2,10}(?:-[a-zA-Z]{2,10})?)\)"),         # (en), (zh-Hans), (pt-PT)
-    re.compile(r"[-_ ]([a-zA-Z]{2,5}(?:-[a-zA-Z]{2,8})?)[-_ .]"),    # _en_, -en-
-    re.compile(r"[-_ ]([a-zA-Z]{2,5}(?:-[a-zA-Z]{2,8})?)$"),          # _en, -en at end
-    re.compile(r"^([a-zA-Z]{2,5}(?:-[a-zA-Z]{2,8})?)[-_ .]"),         # en_banner
-    re.compile(r"^([a-zA-Z]{2,5}(?:-[a-zA-Z]{2,8})?)$"),              # bare "en"
-]
+# ── Language whitelist and tokenization helpers ─────────────────────────────
+_SUPPORTED_LANG_CODES = {
+    'ar', 'az', 'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'et', 'fa', 'fi', 'fr',
+    'he', 'hi', 'hr', 'hu', 'hy', 'id', 'it', 'ja', 'ka', 'kk', 'ko', 'lt', 'lv',
+    'nl', 'no', 'pl', 'pt', 'ro', 'ru', 'sk', 'sl', 'sr', 'sv', 'th', 'tr', 'uk',
+    'ur', 'vi', 'zh', 'cn', 'kr', 'il', 'in', 'gr', 'se', 'dk', 'ua', 'ee', 'kz',
+    'rs', 'cz', 'jp', 'si',
+}
+_COMPOSITE_LANG_CODES = {'zh-hans', 'zh-hant', 'pt-pt', 'sr-latn', 'az-latn'}
+_TOKEN_SPLIT_RE = re.compile(r"[^a-zA-Z]+")
 
 # Tokens that look like lang codes but aren't
 _NON_LANG = {
@@ -92,7 +94,6 @@ def extract_lang_code(filename: str) -> Optional[str]:
         )
         return final_code
 
-    # Skip known non-language filenames
     if stem_lower in _NON_LANG:
         return _log_decision(None, None, None)
 
@@ -100,28 +101,28 @@ def extract_lang_code(filename: str) -> Optional[str]:
         normalized = _normalize_lang(stem)
         return _log_decision(stem, normalized, normalized)
 
-    # Strip size pattern before matching (e.g. _1080x1920)
-    stem_clean = _SIZE_RE.sub("", stem).rstrip("_- ")
+    stem_clean = _SIZE_RE.sub("", stem_lower).strip("_- .")
 
-    # Special case: {PREFIX}_{BRAND}_{lang}_{size} e.g. VDAY2026_wl_ar_350x320
-    tokens = re.split(r"[-_]", stem_clean.lower())
+    # explicit composite codes first
+    for code in sorted(_COMPOSITE_LANG_CODES, key=len, reverse=True):
+        if re.search(rf'(?<![a-z]){re.escape(code)}(?![a-z])', stem_clean):
+            normalized = _normalize_lang(code)
+            return _log_decision(code, normalized, normalized)
+
+    # then plain tokenized lookup, only from whitelist
+    tokens = [t for t in _TOKEN_SPLIT_RE.split(stem_clean) if t]
     for i, tok in enumerate(tokens):
         if tok in _BRAND_PREFIXES and i + 1 < len(tokens):
             candidate = tokens[i + 1]
-            if candidate not in _NON_LANG and not re.match(r"^\d+$", candidate) and len(candidate) >= 2:
+            if candidate in _SUPPORTED_LANG_CODES:
                 normalized = _normalize_lang(candidate)
                 return _log_decision(candidate, normalized, normalized)
 
-    for pattern in _LANG_PATTERNS:
-        m = pattern.search(stem_clean)
-        if m:
-            code = m.group(1).lower()
-            if code in _NON_LANG:
-                continue
-            if re.match(r"^\d+$", code):
-                continue
-            normalized = _normalize_lang(code)
-            return _log_decision(code, normalized, normalized)
+    for tok in reversed(tokens):
+        if tok in _SUPPORTED_LANG_CODES:
+            normalized = _normalize_lang(tok)
+            return _log_decision(tok, normalized, normalized)
+
     return _log_decision(None, None, None)
 
 

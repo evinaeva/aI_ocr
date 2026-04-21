@@ -467,6 +467,22 @@ class TestTxtFormat:
             result = select_best(sections, pic.content_text, 'en', hint_name='PIC')
             assert result.best.section.name == 'PIC'
 
+    def test_plain_txt_banner_not_split_by_numeric_copy(self):
+        text = "10 TOKENS instantly on your balance!\nOffer ends soon."
+        sections = extract_sections(text.encode('utf-8'), 'plain.txt')
+        assert len(sections) == 1
+        assert sections[0].number is None
+        assert sections[0].name == 'UNKNOWN'
+        assert sections[0].content_text == text
+
+    def test_plain_txt_banner_matches_as_whole_reference(self):
+        text = "10 TOKENS instantly on your balance!\nOffer ends soon."
+        sections = extract_sections(text.encode('utf-8'), 'plain.txt')
+        result = select_best(sections, text, 'en')
+        assert result.best is not None
+        assert result.best.strict_equal is True
+        assert result.status == 'PASS'
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '--tb=short'])

@@ -174,9 +174,38 @@ def _text_from_docx_bytes(docx_bytes: bytes) -> List[Section]:
     return sections
 
 
+def _is_likely_txt_header_name(name: str) -> bool:
+    """Conservative TXT-only heuristic to avoid treating banner copy as section headers."""
+    stripped = name.strip()
+    if not stripped or stripped[-1] in "!?.,:;":
+        return False
+
+    words = stripped.split()
+    if len(words) > 4:
+        return False
+
+    letters = [ch for ch in stripped if ch.isalpha()]
+    if not letters:
+        return False
+
+    upper_ratio = sum(1 for ch in letters if ch.isupper()) / len(letters)
+    return upper_ratio >= 0.6
+
+
 def _text_from_txt_bytes(txt_bytes: bytes) -> List[Section]:
     text = txt_bytes.decode("utf-8", errors="replace")
-    return _parse_sections_from_lines(text.splitlines())
+    lines = text.splitlines()
+    parsed_sections = _parse_sections_from_lines(
+        lines,
+        header_validator=lambda _num, name, _raw: _is_likely_txt_header_name(name),
+    )
+
+    explicit_headers = [sec for sec in parsed_sections if sec.number is not None and sec.raw_header]
+    if explicit_headers:
+        return parsed_sections
+
+    content = text.strip()
+    return [Section(number=None, name="UNKNOWN", content_text=content, raw_header="")] if content else []
 
 
 # ─── Heading 2 style segmentation ────────────────────────────────────────────────
@@ -233,7 +262,7 @@ def _parse_sections_from_paragraphs(paragraphs) -> List[Section]:
 
 # ─── Line-based segmentation (fallback) ─────────────────────────────────────────
 
-def _parse_sections_from_lines(lines: List[str]) -> List[Section]:
+def _parse_sections_from_lines(lines: List[str], header_validator=None) -> List[Section]:
     sections: List[Section] = []
     current_lines: List[str] = []
     current_num: Optional[int] = None
@@ -265,7 +294,7 @@ def _parse_sections_from_lines(lines: List[str]) -> List[Section]:
 
         blank_run = 0
         parsed = _parse_header(stripped)
-        if parsed:
+        if parsed and (header_validator is None or header_validator(parsed[0], parsed[1], stripped)):
             if current_lines or current_header:
                 flush()
                 current_lines = []
