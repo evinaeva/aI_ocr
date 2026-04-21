@@ -25,6 +25,7 @@ from typing import Dict, Optional
 _SUPPORTED_LANG_CODES = {
     'zn',
     'ar', 'az', 'bg', 'cs', 'da', 'de', 'el', 'en', 'es', 'et', 'fa', 'fi', 'fr',
+    'mk',
     'he', 'hi', 'hr', 'hu', 'hy', 'id', 'it', 'ja', 'ka', 'kk', 'ko', 'lt', 'lv',
     'nl', 'no', 'pl', 'pt', 'ro', 'ru', 'sk', 'sl', 'sr', 'sv', 'th', 'tr', 'uk',
     'ur', 'vi', 'zh', 'cn', 'kr', 'il', 'in', 'gr', 'se', 'dk', 'ua', 'ee', 'kz',
@@ -104,8 +105,19 @@ def extract_lang_code(filename: str) -> Optional[str]:
         return _log_decision(stem, normalized, normalized)
 
     stem_clean = _SIZE_RE.sub("", stem_lower).strip("_- .")
+    stem_paren = stem.lower()
 
     # explicit composite codes first
+    paren_match = re.search(r'\(([^)]+)\)', stem_paren)
+    if paren_match:
+        inner = paren_match.group(1).strip().lower()
+        if inner in _COMPOSITE_LANG_CODES:
+            normalized = _normalize_lang(inner)
+            return _log_decision(inner, normalized, normalized)
+        if inner in _SUPPORTED_LANG_CODES:
+            normalized = _normalize_lang(inner)
+            return _log_decision(inner, normalized, normalized)
+
     for code in sorted(_COMPOSITE_LANG_CODES, key=len, reverse=True):
         if re.search(rf'(?<![a-z]){re.escape(code)}(?![a-z])', stem_clean):
             normalized = _normalize_lang(code)
