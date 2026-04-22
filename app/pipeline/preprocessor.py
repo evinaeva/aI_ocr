@@ -5,9 +5,12 @@ Implements: load_image, maybe_upscale, scale_bbox, crop_zone_to_png.
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import math
 from typing import List, Tuple
+
+from .cropped_image import CroppedImage
 
 try:
     from PIL import Image
@@ -96,10 +99,36 @@ def scale_bbox(
 def crop_zone_to_png(img: "Image.Image", bbox_scaled: List[int]) -> bytes:
     """Crop img to bbox_scaled and return PNG bytes. Does NOT write to disk."""
     x1, y1, x2, y2 = bbox_scaled
+    if x2 <= x1 or y2 <= y1:
+        raise RuntimeError("Zero-area crop — refusing OCR")
     cropped = img.crop((x1, y1, x2, y2))
     buf = io.BytesIO()
     cropped.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def make_cropped_image(
+    original_image_bytes: bytes,
+    bbox_scaled: List[int],
+    crop_bytes: bytes,
+    *,
+    original_width: int,
+    original_height: int,
+    crop_width: int,
+    crop_height: int,
+) -> CroppedImage:
+    if bbox_scaled is None:
+        raise RuntimeError("Missing bbox — refusing OCR without crop bounds")
+    return CroppedImage(
+        bytes=crop_bytes,
+        bbox=bbox_scaled,
+        original_width=original_width,
+        original_height=original_height,
+        crop_width=crop_width,
+        crop_height=crop_height,
+        original_sha256=hashlib.sha256(original_image_bytes).hexdigest(),
+        cropped=True,
+    )
 
 
 def crop_to_base64(img: "Image.Image", bbox_scaled: List[int]) -> str:

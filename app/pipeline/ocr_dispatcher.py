@@ -1,7 +1,7 @@
 """
 Phase 4: OCR Dispatcher.
 
-dispatch_zone_ocr(zone, image_bytes) -> list[ZoneEngineResult]
+dispatch_zone_ocr(zone, cropped_image) -> list[ZoneEngineResult]
 
 Contract:
 - If zone.engines == [] → return [] immediately (no OCR called).
@@ -17,6 +17,7 @@ import os
 import time
 from typing import List
 
+from .cropped_image import CroppedImage
 from .models import ZoneDef
 
 # Module-level import so tests can patch 'app.pipeline.ocr_dispatcher.run_ocr_multi'.
@@ -82,7 +83,7 @@ class ZoneEngineResult:
 
 def dispatch_zone_ocr(
     zone: ZoneDef,
-    image_bytes: bytes,
+    cropped_image: CroppedImage,
 ) -> List[ZoneEngineResult]:
     """
     Run OCR for every engine configured in zone.engines.
@@ -94,8 +95,11 @@ def dispatch_zone_ocr(
     """
     if not zone.engines:
         return []
+    if not isinstance(cropped_image, CroppedImage):
+        raise RuntimeError("dispatch_zone_ocr requires CroppedImage payload")
 
     results: List[ZoneEngineResult] = []
+    zone_bytes = cropped_image.bytes
 
     for engine_name in zone.engines:
         t0 = time.monotonic()
@@ -103,7 +107,7 @@ def dispatch_zone_ocr(
             if run_ocr_multi is None:
                 raise RuntimeError("run_ocr_multi not available")
 
-            measured_bytes = _measure_payload(engine_name, image_bytes)
+            measured_bytes = _measure_payload(engine_name, zone_bytes)
             ocr_map = run_ocr_multi(measured_bytes, [engine_name], zone.engine_config)
             elapsed = (time.monotonic() - t0) * 1000.0
 
