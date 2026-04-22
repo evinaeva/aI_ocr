@@ -673,7 +673,7 @@ async def phase2_preview(upload_id: str, target_id: str):
 
 
 @app.post("/api/phase2/check/{upload_id}")
-async def phase2_check(upload_id: str):
+async def phase2_check(upload_id: str, request: Request):
     conn = get_db()
     row = conn.execute(
         "SELECT zip_bytes, section_number, section_name, created_at FROM phase2_uploads WHERE upload_id=?",
@@ -686,13 +686,32 @@ async def phase2_check(upload_id: str):
         conn.close()
         return JSONResponse({"error": "upload expired"}, status_code=410)
 
+    template_name = None
+    try:
+        payload = await request.json()
+        if isinstance(payload, dict):
+            raw_template_name = payload.get("template_name")
+            if isinstance(raw_template_name, str) and raw_template_name.strip():
+                template_name = raw_template_name.strip()
+    except Exception:
+        template_name = None
+
+    from app.pipeline.phase2_routes import _resolve_target_bboxes
+
+    target_bboxes = _resolve_target_bboxes(template_name)
     engines = ["google", "azure", "ocrspace"]
     zip_bytes = bytes(row["zip_bytes"])
     section_number = row["section_number"]
     section_name = row["section_name"]
     conn.close()
 
-    session_id = _start_session_from_zip(zip_bytes, section_number, section_name, engines)
+    session_id = _start_session_from_zip(
+        zip_bytes,
+        section_number,
+        section_name,
+        engines,
+        target_bboxes=target_bboxes,
+    )
     return JSONResponse({"session_id": session_id, "engines": engines})
 
 
@@ -712,6 +731,7 @@ def _start_session_from_zip(
     section_number: Optional[int],
     section_name: Optional[str],
     engines: List[str],
+    target_bboxes: Optional[Dict[str, list[int]]] = None,
 ) -> str:
     session_id = str(uuid.uuid4())
 
@@ -723,7 +743,7 @@ def _start_session_from_zip(
     conn.commit()
     conn.close()
 
-    asyncio.create_task(_process_session(session_id, zip_bytes, section_number, section_name, engines))
+    asyncio.create_task(_process_session(session_id, zip_bytes, section_number, section_name, engines, target_bboxes))
     return session_id
 
 
@@ -842,6 +862,7 @@ async def _process_session(
     hint_number: Optional[int],
     hint_name: Optional[str],
     engines: List[str],
+    target_bboxes: Optional[Dict[str, list[int]]] = None,
 ):
     conn = get_db()
     conn.execute("UPDATE sessions SET status='processing' WHERE session_id=?", (session_id,))
@@ -855,7 +876,7 @@ async def _process_session(
         log_event("run_start", run_id=session_id, archive_name=archive_label)
 
         contents = process_zip(zip_bytes)
-        manifest = build_zip_manifest(zip_bytes)
+        manifest = build_zip_manifest(zip_bytes, target_bboxes=target_bboxes)
         queue_items = [item for target in manifest for item in target.items]
         (
             preloaded_images,
@@ -872,6 +893,23 @@ async def _process_session(
         counters = _collect_zip_debug_counters(zip_bytes)
         counters["images_detected_total"] = len(queue_items)
         counters["images_queued_total"] = len(queue_items)
+        counters["crop_success_total"] = len(cropped_images)
+        counters["crop_failure_total"] = len(crop_required_indices)
+        counters["ocr_dispatch_reached_total"] = 0
+        counters["rows_inserted_by_reason"] = {}
+
+        queue_with_bbox = sum(1 for item in queue_items if _resolve_real_bbox(item) is not None)
+        queue_missing_bbox = max(0, len(queue_items) - queue_with_bbox)
+        logger.info(
+            "session_queue_stats session_id=%s queued=%d with_bbox=%d missing_bbox=%d read_failed=%d crop_success=%d crop_failed=%d",
+            session_id,
+            len(queue_items),
+            queue_with_bbox,
+            queue_missing_bbox,
+            len(read_failed_indices),
+            len(cropped_images),
+            len(crop_required_indices),
+        )
 
         total = len(queue_items)
         conn.execute("UPDATE sessions SET total=? WHERE session_id=?", (total, session_id))
@@ -941,6 +979,7 @@ async def _process_session(
                     en_source_bytes = _read_archive_image(zip_bytes, en_source_image_name)
                 en_source_crop = cropped_images.get(en_source_idx) if en_source_idx is not None else None
                 if en_source_crop is not None:
+                    counters["ocr_dispatch_reached_total"] += 1
                     en_source_ocr_results = await asyncio.get_event_loop().run_in_executor(
                         None,
                         _run_zone_ocr_for_engines,
@@ -992,6 +1031,18 @@ async def _process_session(
                     ),
                 )
                 conn.commit()
+                counters["rows_inserted_by_reason"]["image_read_error"] = counters["rows_inserted_by_reason"].get("image_read_error", 0) + 1
+                _push_event(
+                    session_id,
+                    {
+                        "event": "item",
+                        "idx": idx,
+                        "lang": lang,
+                        "image_name": image_name,
+                        "status": "MANUAL",
+                        "reason": "image_read_error",
+                    },
+                )
                 continue
             if idx in missing_bbox_indices:
                 counters["images_skipped_total"] += 1
@@ -1024,6 +1075,18 @@ async def _process_session(
                     ),
                 )
                 conn.commit()
+                counters["rows_inserted_by_reason"]["missing_bbox"] = counters["rows_inserted_by_reason"].get("missing_bbox", 0) + 1
+                _push_event(
+                    session_id,
+                    {
+                        "event": "item",
+                        "idx": idx,
+                        "lang": lang,
+                        "image_name": image_name,
+                        "status": "MANUAL",
+                        "reason": "missing_bbox",
+                    },
+                )
                 continue
             if idx in crop_required_indices:
                 counters["images_skipped_total"] += 1
@@ -1056,6 +1119,18 @@ async def _process_session(
                     ),
                 )
                 conn.commit()
+                counters["rows_inserted_by_reason"]["crop_required"] = counters["rows_inserted_by_reason"].get("crop_required", 0) + 1
+                _push_event(
+                    session_id,
+                    {
+                        "event": "item",
+                        "idx": idx,
+                        "lang": lang,
+                        "image_name": image_name,
+                        "status": "MANUAL",
+                        "reason": "crop_required",
+                    },
+                )
                 continue
 
             if image_bytes is None:
@@ -1092,6 +1167,18 @@ async def _process_session(
                         ),
                     )
                     conn.commit()
+                    counters["rows_inserted_by_reason"]["image_read_error"] = counters["rows_inserted_by_reason"].get("image_read_error", 0) + 1
+                    _push_event(
+                        session_id,
+                        {
+                            "event": "item",
+                            "idx": idx,
+                            "lang": lang,
+                            "image_name": image_name,
+                            "status": "MANUAL",
+                            "reason": "image_read_error",
+                        },
+                    )
                     continue
 
             conn.execute(
@@ -1118,6 +1205,7 @@ async def _process_session(
             if idx == en_source_idx and en_source_ocr_results is not None:
                 ocr_results = en_source_ocr_results
             else:
+                counters["ocr_dispatch_reached_total"] += 1
                 ocr_results = await asyncio.get_event_loop().run_in_executor(
                     None,
                     _run_zone_ocr_for_engines,
@@ -1289,6 +1377,7 @@ async def _process_session(
                 ),
             )
             conn.commit()
+            counters["rows_inserted_by_reason"][reason] = counters["rows_inserted_by_reason"].get(reason, 0) + 1
 
             _push_event(
                 session_id,
@@ -1301,6 +1390,12 @@ async def _process_session(
                     "best_engine": best_engine,
                 },
             )
+
+        logger.info(
+            "session_row_stats session_id=%s rows_by_reason=%s",
+            session_id,
+            json.dumps(counters["rows_inserted_by_reason"], ensure_ascii=False, sort_keys=True),
+        )
 
         session_meta = {
             **counters,

@@ -60,6 +60,15 @@ class TestZipManifest(unittest.TestCase):
         self.assertFalse(targets["700"].has_en)
         self.assertTrue(targets["1080"].has_en)
 
+    def test_target_bboxes_are_propagated_to_manifest_items(self):
+        z = _zip({
+            "700/en.png": PNG_MIN,
+            "1080/en.png": PNG_MIN,
+        })
+        targets = {m.target_id: m for m in build_zip_manifest(z, target_bboxes={"700": [1, 2, 30, 40]})}
+        self.assertEqual(targets["700"].items[0].bbox, [1, 2, 30, 40])
+        self.assertIsNone(targets["1080"].items[0].bbox)
+
 
 if __name__ == "__main__":
     unittest.main()
