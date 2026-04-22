@@ -235,6 +235,7 @@ async function loadResults() {
 // ── Table header (dynamic per engines) ─────────────────────────────────
 function renderTableHeader(engines) {
   const cols = ['<th>Image</th>'];
+  cols.push('<th>Zone</th>');
   engines.forEach(eng => {
     const color = ENGINE_COLORS[eng] || '#666';
     const label = ENGINE_LABELS[eng] || eng;
@@ -249,29 +250,38 @@ function renderTableHeader(engines) {
 // ── Table rendering ─────────────────────────────────────────────────────
 function renderTable(rows, engines) {
   $resultsBody.innerHTML = '';
-  const colspan = engines.length + 4;  // image + engines + ref + status + review
+  const colspan = engines.length + 5;  // image + zone + engines + ref + status + review
   if (!rows.length) {
     $resultsBody.innerHTML = '<tr><td colspan="' + colspan + '" style="text-align:center;color:var(--muted);padding:20px">No results</td></tr>';
     return;
   }
+  const seenImageNames = new Set();
   rows.forEach(row => {
     const tr = document.createElement('tr');
-    const imgSrc = row.image_name
+    const imageName = row.image_name || '';
+    const imgSrc = imageName
       ? '/image/' + state.sessionId + '/' + encodeURIComponent(row.image_name)
       : null;
+    const showImageThumb = !!imageName && !seenImageNames.has(imageName);
+    if (imageName) seenImageNames.add(imageName);
 
     // Image cell
     let html = '<td class="img-cell">';
-    if (imgSrc) {
+    if (imgSrc && showImageThumb) {
       html += '<div class="thumb-wrap">' +
         '<img class="thumb" src="' + imgSrc + '" alt="' + esc(row.image_name) + '" data-full="' + imgSrc + '">' +
         '<div class="thumb-missing" style="display:none">no image</div>' +
         '</div>' +
         '<div class="thumb-label">' + esc(getThumbLangCode(row.image_name, row.lang)) + '</div>';
+    } else if (imgSrc) {
+      html += '<span class="img-repeat-placeholder">\u2014</span>';
     } else {
       html += '<span style="color:var(--muted)">\u2014</span>';
     }
     html += '</td>';
+
+    // Zone column
+    html += '<td class="zone-cell" title="' + esc(row.target_id || '') + '">' + esc(row.zone_name || '-') + '</td>';
 
     // One OCR text column per engine
     engines.forEach(eng => {
