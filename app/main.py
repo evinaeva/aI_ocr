@@ -41,6 +41,7 @@ from .ocr import (
     _google_cache_put,
     emit_startup_warnings,
     google_batch_annotate_images,
+    run_ocr_multi,
 )
 from .pipeline import template_store
 from .pipeline.batch_routes import batch_router  # P2.4: v2-batch job orchestration
@@ -989,6 +990,16 @@ async def _process_session(
                         engines,
                     )
                     _, en_source_best_text, _ = _pick_best_text(en_source_ocr_results)
+                elif not target_zones and en_source_bytes is not None:
+                    counters["ocr_dispatch_reached_total"] += 1
+                    _raw_en = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        run_ocr_multi,
+                        en_source_bytes,
+                        engines,
+                    )
+                    en_source_ocr_results = {eng: res for eng, res in _raw_en.items()}
+                    _, en_source_best_text, _ = _pick_best_text(en_source_ocr_results)
             except Exception:
                 en_source_ocr_results = None
                 en_source_best_text = ""
@@ -1052,51 +1063,53 @@ async def _process_session(
                 )
                 continue
             if idx in missing_bbox_indices:
-                counters["images_skipped_total"] += 1
-                counters["images_skipped_by_reason"]["missing_bbox"] = counters["images_skipped_by_reason"].get("missing_bbox", 0) + 1
-                manual_count += 1
-                conn.execute(
-                    """INSERT INTO results
-                       (session_id, lang, image_name, text_name, ref_text,
-                        section_name, section_number, status, score, reason,
-                        ocr_results_json, best_engine, reference_confidence,
-                        reference_score_top1, reference_score_top2, reference_margin, zone_name, target_id)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (
+                if target_zones:
+                    counters["images_skipped_total"] += 1
+                    counters["images_skipped_by_reason"]["missing_bbox"] = counters["images_skipped_by_reason"].get("missing_bbox", 0) + 1
+                    manual_count += 1
+                    conn.execute(
+                        """INSERT INTO results
+                           (session_id, lang, image_name, text_name, ref_text,
+                            section_name, section_number, status, score, reason,
+                            ocr_results_json, best_engine, reference_confidence,
+                            reference_score_top1, reference_score_top2, reference_margin, zone_name, target_id)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            session_id,
+                            lang,
+                            image_name,
+                            "",
+                            "",
+                            "",
+                            None,
+                            "MANUAL",
+                            0.0,
+                            "missing_bbox",
+                            "{}",
+                            None,
+                            0.0,
+                            None,
+                            None,
+                            0.0,
+                            zone_name,
+                            target_id,
+                        ),
+                    )
+                    conn.commit()
+                    counters["rows_inserted_by_reason"]["missing_bbox"] = counters["rows_inserted_by_reason"].get("missing_bbox", 0) + 1
+                    _push_event(
                         session_id,
-                        lang,
-                        image_name,
-                        "",
-                        "",
-                        "",
-                        None,
-                        "MANUAL",
-                        0.0,
-                        "missing_bbox",
-                        "{}",
-                        None,
-                        0.0,
-                        None,
-                        None,
-                        0.0,
-                        zone_name,
-                        target_id,
-                    ),
-                )
-                conn.commit()
-                counters["rows_inserted_by_reason"]["missing_bbox"] = counters["rows_inserted_by_reason"].get("missing_bbox", 0) + 1
-                _push_event(
-                    session_id,
-                    {
-                        "event": "item",
-                        "idx": idx,
-                        "lang": lang,
-                        "image_name": image_name,
-                        "status": "MANUAL",
-                        "reason": "missing_bbox",
-                    },
-                )
-                continue
+                        {
+                            "event": "item",
+                            "idx": idx,
+                            "lang": lang,
+                            "image_name": image_name,
+                            "status": "MANUAL",
+                            "reason": "missing_bbox",
+                        },
+                    )
+                    continue
+                # No zones configured — fall through to full-image OCR
             if idx in crop_required_indices:
                 counters["images_skipped_total"] += 1
                 counters["images_skipped_by_reason"]["crop_required"] = counters["images_skipped_by_reason"].get("crop_required", 0) + 1
@@ -1212,17 +1225,25 @@ async def _process_session(
             )
 
             cropped_image = cropped_images.get(idx)
-            if cropped_image is None:
+            if cropped_image is None and target_zones:
                 raise RuntimeError(f"Crop required but missing for {image_name}")
 
             if idx == en_source_idx and en_source_ocr_results is not None:
                 ocr_results = en_source_ocr_results
-            else:
+            elif cropped_image is not None:
                 counters["ocr_dispatch_reached_total"] += 1
                 ocr_results = await asyncio.get_event_loop().run_in_executor(
                     None,
                     _run_zone_ocr_for_engines,
                     cropped_image,
+                    engines,
+                )
+            else:
+                counters["ocr_dispatch_reached_total"] += 1
+                ocr_results = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    run_ocr_multi,
+                    image_bytes,
                     engines,
                 )
 
