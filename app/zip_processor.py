@@ -19,7 +19,7 @@ import logging
 import re
 import zipfile
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 # ── Language whitelist and tokenization helpers ─────────────────────────────
 _SUPPORTED_LANG_CODES = {
@@ -169,6 +169,8 @@ class ZipManifestItem:
     lang: Optional[str]
     target_id: str
     bbox: Optional[list[int]] = None
+    zone_name: Optional[str] = None
+    expected_by_lang: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -215,6 +217,7 @@ def build_zip_manifest(
     zip_bytes: bytes,
     *,
     target_bboxes: Optional[Dict[str, list[int]]] = None,
+    target_zones: Optional[Dict[str, list[dict[str, Any]]]] = None,
 ) -> list[ZipTargetManifest]:
     """
     Build backend ZIP manifest grouped by target_id.
@@ -239,13 +242,32 @@ def build_zip_manifest(
         lang = extract_lang_code(basename)
         target_id = _infer_target_id(path, grouped)
         target = targets.setdefault(target_id, ZipTargetManifest(target_id=target_id, has_en=False))
-        bbox = None
-        if target_bboxes:
+        zones = []
+        if target_zones and target_id in target_zones:
+            zones = target_zones[target_id]
+        elif target_bboxes:
             candidate = target_bboxes.get(target_id)
             if isinstance(candidate, list) and len(candidate) == 4:
-                bbox = [int(v) for v in candidate]
-        item = ZipManifestItem(archive_path=path, lang=lang, target_id=target_id, bbox=bbox)
-        target.items.append(item)
+                zones = [{"bbox": [int(v) for v in candidate], "zone_name": None, "expected_by_lang": {}}]
+
+        if zones:
+            for zone in zones:
+                bbox = zone.get("bbox") if isinstance(zone, dict) else None
+                if not isinstance(bbox, list) or len(bbox) != 4:
+                    continue
+                expected_by_lang = zone.get("expected_by_lang") if isinstance(zone, dict) else None
+                item = ZipManifestItem(
+                    archive_path=path,
+                    lang=lang,
+                    target_id=target_id,
+                    bbox=[int(v) for v in bbox],
+                    zone_name=(zone.get("zone_name") if isinstance(zone, dict) else None),
+                    expected_by_lang=(expected_by_lang if isinstance(expected_by_lang, dict) else {}),
+                )
+                target.items.append(item)
+        else:
+            item = ZipManifestItem(archive_path=path, lang=lang, target_id=target_id, bbox=None)
+            target.items.append(item)
         if lang == "en":
             target.has_en = True
 
