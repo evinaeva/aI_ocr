@@ -208,8 +208,8 @@ def _is_target_segment(segment: str) -> bool:
 def _infer_target_id(path: str, grouped: bool) -> str:
     clean = path.split("!/", 1)[-1]
     parts = [p for p in clean.split("/") if p]
-    if grouped and len(parts) >= 2 and _is_target_segment(parts[0]):
-        return parts[0]
+    if len(parts) > 1:
+        return "/".join(parts[:-1])
     return "default"
 
 
