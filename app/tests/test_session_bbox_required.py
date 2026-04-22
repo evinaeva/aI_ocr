@@ -44,7 +44,7 @@ def test_process_session_missing_bbox_marks_manual_and_skips_ocr(monkeypatch, tm
     manifest = [SimpleNamespace(items=[item])]
 
     monkeypatch.setattr(main, "process_zip", lambda _zip: SimpleNamespace(texts={}, images={}, image_names={}))
-    monkeypatch.setattr(main, "build_zip_manifest", lambda _zip: manifest)
+    monkeypatch.setattr(main, "build_zip_manifest", lambda _zip, **_kwargs: manifest)
     monkeypatch.setattr(
         main,
         "_collect_zip_debug_counters",
@@ -68,6 +68,9 @@ def test_process_session_missing_bbox_marks_manual_and_skips_ocr(monkeypatch, tm
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("OCR must not run without bbox")),
     )
 
+    pushed_events = []
+    monkeypatch.setattr(main, "_push_event", lambda _sid, event: pushed_events.append(event))
+
     asyncio.run(main._process_session(session_id, b"zip", None, None, ["google"]))
 
     conn = main.get_db()
@@ -80,6 +83,11 @@ def test_process_session_missing_bbox_marks_manual_and_skips_ocr(monkeypatch, tm
     assert row is not None
     assert row["status"] == "MANUAL"
     assert row["reason"] == "missing_bbox"
+    assert any(evt.get("event") == "item" and evt.get("reason") == "missing_bbox" for evt in pushed_events)
+    payload = asyncio.run(main.get_results(session_id))
+    body = payload.body.decode("utf-8")
+    assert '"results"' in body
+    assert '"ocr_results":{}' in body
 
 
 def test_process_session_tuple_bbox_not_marked_missing_bbox(monkeypatch, tmp_path):
@@ -100,7 +108,7 @@ def test_process_session_tuple_bbox_not_marked_missing_bbox(monkeypatch, tmp_pat
     manifest = [SimpleNamespace(items=[item])]
 
     monkeypatch.setattr(main, "process_zip", lambda _zip: SimpleNamespace(texts={}, images={}, image_names={}))
-    monkeypatch.setattr(main, "build_zip_manifest", lambda _zip: manifest)
+    monkeypatch.setattr(main, "build_zip_manifest", lambda _zip, **_kwargs: manifest)
     monkeypatch.setattr(
         main,
         "_collect_zip_debug_counters",
@@ -115,7 +123,14 @@ def test_process_session_tuple_bbox_not_marked_missing_bbox(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(main, "_read_archive_image", lambda *_args, **_kwargs: b"img")
     monkeypatch.setattr(main, "_crop_zip_zone", lambda *_args, **_kwargs: "crop")
-    monkeypatch.setattr(main, "_run_zone_ocr_for_engines", lambda *_args, **_kwargs: {})
+    ocr_calls = {"count": 0}
+    monkeypatch.setattr(main, "_push_event", lambda *_args, **_kwargs: None)
+
+    def _fake_ocr(*_args, **_kwargs):
+        ocr_calls["count"] += 1
+        return {}
+
+    monkeypatch.setattr(main, "_run_zone_ocr_for_engines", _fake_ocr)
 
     asyncio.run(main._process_session(session_id, b"zip", None, None, ["google"]))
 
@@ -128,3 +143,4 @@ def test_process_session_tuple_bbox_not_marked_missing_bbox(monkeypatch, tmp_pat
 
     assert row is not None
     assert row["reason"] != "missing_bbox"
+    assert ocr_calls["count"] >= 1

@@ -168,6 +168,7 @@ class ZipManifestItem:
     archive_path: str
     lang: Optional[str]
     target_id: str
+    bbox: Optional[list[int]] = None
 
 
 @dataclass
@@ -210,7 +211,11 @@ def _infer_target_id(path: str, grouped: bool) -> str:
     return "default"
 
 
-def build_zip_manifest(zip_bytes: bytes) -> list[ZipTargetManifest]:
+def build_zip_manifest(
+    zip_bytes: bytes,
+    *,
+    target_bboxes: Optional[Dict[str, list[int]]] = None,
+) -> list[ZipTargetManifest]:
     """
     Build backend ZIP manifest grouped by target_id.
 
@@ -234,7 +239,12 @@ def build_zip_manifest(zip_bytes: bytes) -> list[ZipTargetManifest]:
         lang = extract_lang_code(basename)
         target_id = _infer_target_id(path, grouped)
         target = targets.setdefault(target_id, ZipTargetManifest(target_id=target_id, has_en=False))
-        item = ZipManifestItem(archive_path=path, lang=lang, target_id=target_id)
+        bbox = None
+        if target_bboxes:
+            candidate = target_bboxes.get(target_id)
+            if isinstance(candidate, list) and len(candidate) == 4:
+                bbox = [int(v) for v in candidate]
+        item = ZipManifestItem(archive_path=path, lang=lang, target_id=target_id, bbox=bbox)
         target.items.append(item)
         if lang == "en":
             target.has_en = True

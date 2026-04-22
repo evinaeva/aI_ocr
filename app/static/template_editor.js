@@ -688,7 +688,11 @@
     setProgress(0, 0);
 
     try {
-      const resp = await fetch(`/api/phase2/run/${encodeURIComponent(state.uploadId)}`, { method: 'POST' });
+      const resp = await fetch(`/api/phase2/run/${encodeURIComponent(state.uploadId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template_name: state.zipFilename || null }),
+      });
       const text = await resp.text();
 
       if (!resp.ok) {
