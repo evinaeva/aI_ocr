@@ -7,9 +7,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import io
+import struct
+import zlib
 import unittest
 from unittest.mock import MagicMock, patch
+
 from app.pipeline.cropped_image import CroppedImage
+
+
+def _png_bytes(width: int, height: int, color=(9, 8, 7)) -> bytes:
+    r, g, b = color
+    row = b"\x00" + bytes([r, g, b]) * width
+    raw = row * height
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
 
 
 class TestBatchRouterImport(unittest.TestCase):
@@ -84,13 +101,13 @@ class TestGoogleBatchPrefetch(unittest.TestCase):
              patch("app.pipeline.batch_routes._google_cache_put") as mock_put, \
              patch("app.pipeline.batch_routes._crop_zone_bytes",
                    return_value=CroppedImage(
-                       bytes=b"fakecrop",
+                       bytes=_png_bytes(9, 9),
                        bbox=[1, 1, 10, 10],
                        original_width=100,
                        original_height=100,
                        crop_width=9,
                        crop_height=9,
-                       original_sha256="abc",
+                       original_sha256="a" * 64,
                        cropped=True,
                    )):
             result = _prefetch_google_for_target(b"imgbytes", [zone], [440, 1100])

@@ -1,9 +1,25 @@
+import io
+import struct
+import zlib
 import os
 os.environ.setdefault("APP_PASSWORD", "test")
 os.environ.setdefault("SESSION_SECRET", "testsecret")
 
 from app import main
 from app.ocr import OCRResult
+
+
+def _png_bytes(width: int = 20, height: int = 20, color=(3, 4, 5)) -> bytes:
+    r, g, b = color
+    row = b"\x00" + bytes([r, g, b]) * width
+    raw = row * height
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+
 
 
 class _Item:
@@ -26,7 +42,7 @@ def test_prefetch_google_for_zip_items_batches_and_populates_cache(monkeypatch):
         lambda b, bbox: main.make_cropped_image(
             b,
             bbox,
-            b"crop-" + b,
+            _png_bytes(20, 20),
             original_width=100,
             original_height=100,
             crop_width=20,
@@ -71,7 +87,7 @@ def test_prefetch_google_for_zip_items_no_single_google_fallback_on_batch_error(
         lambda b, bbox: main.make_cropped_image(
             b,
             bbox,
-            b"crop-" + b,
+            _png_bytes(20, 20),
             original_width=100,
             original_height=100,
             crop_width=20,
@@ -122,7 +138,7 @@ def test_prefetch_google_for_zip_items_accepts_tuple_bbox(monkeypatch):
         lambda b, bbox: main.make_cropped_image(
             b,
             bbox,
-            b"crop-" + b,
+            _png_bytes(20, 20),
             original_width=100,
             original_height=100,
             crop_width=20,

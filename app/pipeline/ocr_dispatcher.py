@@ -97,6 +97,9 @@ def dispatch_zone_ocr(
         return []
     if not isinstance(cropped_image, CroppedImage):
         raise RuntimeError("dispatch_zone_ocr requires CroppedImage payload")
+    if not isinstance(cropped_image.original_sha256, str) or not cropped_image.original_sha256.strip():
+        raise RuntimeError("dispatch_zone_ocr requires crop payload with original hash")
+    cropped_image.validate_for_ocr()
 
     results: List[ZoneEngineResult] = []
     zone_bytes = cropped_image.bytes
