@@ -69,6 +69,22 @@ class TestZipManifest(unittest.TestCase):
         self.assertEqual(targets["700"].items[0].bbox, [1, 2, 30, 40])
         self.assertIsNone(targets["1080"].items[0].bbox)
 
+    def test_target_zones_expand_to_multiple_manifest_items_per_image(self):
+        z = _zip({"700/en.png": PNG_MIN})
+        manifest = build_zip_manifest(
+            z,
+            target_zones={
+                "700": [
+                    {"zone_name": "headline", "bbox": [1, 2, 30, 40], "expected_by_lang": {"en": "Hello"}},
+                    {"zone_name": "cta", "bbox": [10, 20, 80, 90], "expected_by_lang": {"en": "Buy"}},
+                ]
+            },
+        )
+        items = manifest[0].items
+        self.assertEqual(len(items), 2)
+        self.assertEqual([it.zone_name for it in items], ["headline", "cta"])
+        self.assertEqual([it.bbox for it in items], [[1, 2, 30, 40], [10, 20, 80, 90]])
+
 
 if __name__ == "__main__":
     unittest.main()

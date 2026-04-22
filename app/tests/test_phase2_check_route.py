@@ -15,7 +15,7 @@ class _Req:
         return self._payload
 
 
-def test_phase2_check_passes_target_bboxes_to_session_start(monkeypatch, tmp_path):
+def test_phase2_check_passes_target_zones_to_session_start(monkeypatch, tmp_path):
     db_path = tmp_path / "phase2_check.db"
     monkeypatch.setattr(main, "DB_PATH", str(db_path))
     main.init_db()
@@ -29,16 +29,20 @@ def test_phase2_check_passes_target_bboxes_to_session_start(monkeypatch, tmp_pat
     conn.close()
 
     import app.pipeline.phase2_routes as phase2_routes
-    monkeypatch.setattr(phase2_routes, "_resolve_target_bboxes", lambda _name: {"700": [1, 2, 30, 40]})
+    monkeypatch.setattr(
+        phase2_routes,
+        "_resolve_target_zones",
+        lambda _name: {"700": [{"zone_name": "z1", "bbox": [1, 2, 30, 40], "target_id": "700", "expected_by_lang": {}, "order": 0}]},
+    )
 
     captured = {}
 
-    def _fake_start(zip_bytes, section_number, section_name, engines, target_bboxes=None):
+    def _fake_start(zip_bytes, section_number, section_name, engines, target_zones=None):
         captured["zip_bytes"] = zip_bytes
         captured["section_number"] = section_number
         captured["section_name"] = section_name
         captured["engines"] = engines
-        captured["target_bboxes"] = target_bboxes
+        captured["target_zones"] = target_zones
         return "session-1"
 
     monkeypatch.setattr(main, "_start_session_from_zip", _fake_start)
@@ -49,4 +53,5 @@ def test_phase2_check_passes_target_bboxes_to_session_start(monkeypatch, tmp_pat
     assert response.body == b'{"session_id":"session-1","engines":["google","azure","ocrspace"]}'
     assert captured["section_number"] == 7
     assert captured["section_name"] == "PIC"
-    assert captured["target_bboxes"] == {"700": [1, 2, 30, 40]}
+    assert list(captured["target_zones"].keys()) == ["700"]
+    assert captured["target_zones"]["700"][0]["bbox"] == [1, 2, 30, 40]

@@ -148,6 +148,8 @@ def init_db():
         "reference_score_top1 REAL",
         "reference_score_top2 REAL",
         "reference_margin REAL",
+        "zone_name TEXT",
+        "target_id TEXT",
     ]:
         try:
             conn.execute(f"ALTER TABLE results ADD COLUMN {col}")
@@ -696,9 +698,9 @@ async def phase2_check(upload_id: str, request: Request):
     except Exception:
         template_name = None
 
-    from app.pipeline.phase2_routes import _resolve_target_bboxes
+    from app.pipeline.phase2_routes import _resolve_target_zones
 
-    target_bboxes = _resolve_target_bboxes(template_name)
+    target_zones = _resolve_target_zones(template_name)
     engines = ["google", "azure", "ocrspace"]
     zip_bytes = bytes(row["zip_bytes"])
     section_number = row["section_number"]
@@ -710,7 +712,7 @@ async def phase2_check(upload_id: str, request: Request):
         section_number,
         section_name,
         engines,
-        target_bboxes=target_bboxes,
+        target_zones=target_zones,
     )
     return JSONResponse({"session_id": session_id, "engines": engines})
 
@@ -731,7 +733,7 @@ def _start_session_from_zip(
     section_number: Optional[int],
     section_name: Optional[str],
     engines: List[str],
-    target_bboxes: Optional[Dict[str, list[int]]] = None,
+    target_zones: Optional[Dict[str, List[dict]]] = None,
 ) -> str:
     session_id = str(uuid.uuid4())
 
@@ -743,7 +745,7 @@ def _start_session_from_zip(
     conn.commit()
     conn.close()
 
-    asyncio.create_task(_process_session(session_id, zip_bytes, section_number, section_name, engines, target_bboxes))
+    asyncio.create_task(_process_session(session_id, zip_bytes, section_number, section_name, engines, target_zones))
     return session_id
 
 
@@ -862,7 +864,7 @@ async def _process_session(
     hint_number: Optional[int],
     hint_name: Optional[str],
     engines: List[str],
-    target_bboxes: Optional[Dict[str, list[int]]] = None,
+    target_zones: Optional[Dict[str, List[dict]]] = None,
 ):
     conn = get_db()
     conn.execute("UPDATE sessions SET status='processing' WHERE session_id=?", (session_id,))
@@ -876,7 +878,7 @@ async def _process_session(
         log_event("run_start", run_id=session_id, archive_name=archive_label)
 
         contents = process_zip(zip_bytes)
-        manifest = build_zip_manifest(zip_bytes, target_bboxes=target_bboxes)
+        manifest = build_zip_manifest(zip_bytes, target_zones=target_zones)
         queue_items = [item for target in manifest for item in target.items]
         (
             preloaded_images,
@@ -998,6 +1000,9 @@ async def _process_session(
         for idx, item in enumerate(queue_items):
             lang = item.lang or "und"
             image_name = item.archive_path
+            zone_name = (getattr(item, "zone_name", None) or "").strip()
+            target_id = str(getattr(item, "target_id", "") or "")
+            expected_by_lang = getattr(item, "expected_by_lang", {}) or {}
 
             image_bytes = preloaded_images.get(idx)
             if image_bytes is None and idx in read_failed_indices:
@@ -1009,8 +1014,8 @@ async def _process_session(
                        (session_id, lang, image_name, text_name, ref_text,
                         section_name, section_number, status, score, reason,
                         ocr_results_json, best_engine, reference_confidence,
-                        reference_score_top1, reference_score_top2, reference_margin)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        reference_score_top1, reference_score_top2, reference_margin, zone_name, target_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         session_id,
                         lang,
@@ -1028,6 +1033,8 @@ async def _process_session(
                         None,
                         None,
                         0.0,
+                        zone_name,
+                        target_id,
                     ),
                 )
                 conn.commit()
@@ -1053,8 +1060,8 @@ async def _process_session(
                        (session_id, lang, image_name, text_name, ref_text,
                         section_name, section_number, status, score, reason,
                         ocr_results_json, best_engine, reference_confidence,
-                        reference_score_top1, reference_score_top2, reference_margin)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        reference_score_top1, reference_score_top2, reference_margin, zone_name, target_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         session_id,
                         lang,
@@ -1072,6 +1079,8 @@ async def _process_session(
                         None,
                         None,
                         0.0,
+                        zone_name,
+                        target_id,
                     ),
                 )
                 conn.commit()
@@ -1097,8 +1106,8 @@ async def _process_session(
                        (session_id, lang, image_name, text_name, ref_text,
                         section_name, section_number, status, score, reason,
                         ocr_results_json, best_engine, reference_confidence,
-                        reference_score_top1, reference_score_top2, reference_margin)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        reference_score_top1, reference_score_top2, reference_margin, zone_name, target_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         session_id,
                         lang,
@@ -1116,6 +1125,8 @@ async def _process_session(
                         None,
                         None,
                         0.0,
+                        zone_name,
+                        target_id,
                     ),
                 )
                 conn.commit()
@@ -1145,8 +1156,8 @@ async def _process_session(
                            (session_id, lang, image_name, text_name, ref_text,
                             section_name, section_number, status, score, reason,
                             ocr_results_json, best_engine, reference_confidence,
-                            reference_score_top1, reference_score_top2, reference_margin)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            reference_score_top1, reference_score_top2, reference_margin, zone_name, target_id)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                         (
                             session_id,
                             lang,
@@ -1164,6 +1175,8 @@ async def _process_session(
                             None,
                             None,
                             0.0,
+                            zone_name,
+                            target_id,
                         ),
                     )
                     conn.commit()
@@ -1231,6 +1244,10 @@ async def _process_session(
             ref_text = ""
             row_lang_norm = (lang or "").strip().lower()
             display_lang = "en" if row_lang_norm.startswith("en") else (row_lang_norm or "und")
+            if isinstance(expected_by_lang, dict) and zone_name:
+                expected = expected_by_lang.get(display_lang) or expected_by_lang.get("en")
+                if isinstance(expected, str):
+                    ref_text = clean_for_display(expected)
             section_name_found = ""
             section_num_found = None
             status = "MANUAL"
@@ -1355,8 +1372,8 @@ async def _process_session(
                    (session_id, lang, image_name, text_name, ref_text,
                     section_name, section_number, status, score, reason,
                     ocr_results_json, best_engine, reference_confidence,
-                    reference_score_top1, reference_score_top2, reference_margin)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    reference_score_top1, reference_score_top2, reference_margin, zone_name, target_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     session_id,
                     lang,
@@ -1374,6 +1391,8 @@ async def _process_session(
                     reference_score_top1,
                     reference_score_top2,
                     reference_margin,
+                    zone_name,
+                    target_id,
                 ),
             )
             conn.commit()
@@ -1491,6 +1510,8 @@ async def get_results(
                 "score": r["score"],
                 "reason": r["reason"],
                 "manual_decision": r["manual_decision"],
+                "zone_name": r["zone_name"] if "zone_name" in r.keys() else "",
+                "target_id": r["target_id"] if "target_id" in r.keys() else "",
                 "ocr_results": ocr_data,
                 "best_engine": r["best_engine"],
                 "reference_confidence": r["reference_confidence"] if "reference_confidence" in r.keys() else None,
