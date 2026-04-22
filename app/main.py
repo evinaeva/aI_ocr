@@ -15,6 +15,7 @@ import time
 import uuid
 import zipfile
 from contextlib import asynccontextmanager
+from numbers import Real
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional
 from urllib.parse import unquote
@@ -40,10 +41,13 @@ from .ocr import (
     _google_cache_put,
     emit_startup_warnings,
     google_batch_annotate_images,
-    run_ocr_multi,
 )
 from .pipeline import template_store
 from .pipeline.batch_routes import batch_router  # P2.4: v2-batch job orchestration
+from .pipeline.cropped_image import CroppedImage
+from .pipeline.models import ZoneDef
+from .pipeline.ocr_dispatcher import dispatch_zone_ocr
+from .pipeline.preprocessor import load_image, make_cropped_image
 from .pipeline.history_routes import history_router  # always imported — see Phase 6 fix
 from .pipeline.phase2_routes import phase2_router
 from .pipeline.preview_routes import preview_router
@@ -274,6 +278,84 @@ def _collect_zip_debug_counters(zip_bytes: bytes) -> dict:
     except zipfile.BadZipFile:
         pass
     return counters
+
+
+def _crop_zip_zone(image_bytes: bytes, bbox: list[int]) -> CroppedImage:
+    img = load_image(image_bytes)
+    x1, y1, x2, y2 = bbox
+    if x2 <= x1 or y2 <= y1:
+        raise RuntimeError("Zero-area crop — refusing OCR")
+    cropped = img.crop((x1, y1, x2, y2))
+    buf = io.BytesIO()
+    cropped.save(buf, format="PNG")
+    return make_cropped_image(
+        image_bytes,
+        bbox,
+        buf.getvalue(),
+        original_width=img.width,
+        original_height=img.height,
+        crop_width=max(1, x2 - x1),
+        crop_height=max(1, y2 - y1),
+    )
+
+
+def _resolve_real_bbox(item: Any) -> Optional[list[int]]:
+    direct_bbox = getattr(item, "bbox", None)
+    if direct_bbox is None:
+        return None
+    if isinstance(direct_bbox, (str, bytes, bytearray)):
+        return None
+    try:
+        values = list(direct_bbox)
+    except TypeError:
+        return None
+    if len(values) != 4:
+        return None
+    normalized: list[int] = []
+    for v in values:
+        if isinstance(v, bool) or not isinstance(v, Real):
+            return None
+        if isinstance(v, float) and not v.is_integer():
+            return None
+        normalized.append(int(v))
+    return normalized
+
+
+def _select_manifest_item_for_debug(
+    manifest_items: List[Any],
+    lang: str,
+    image_name: str,
+) -> Optional[Any]:
+    lang_norm = (lang or "").strip().lower()
+    image_name_norm = (image_name or "").strip()
+    image_basename = image_name_norm.rsplit("/", 1)[-1]
+    for item in manifest_items:
+        item_lang = (getattr(item, "lang", "") or "").strip().lower()
+        item_path = (getattr(item, "archive_path", "") or "").strip()
+        if item_lang != lang_norm:
+            continue
+        if item_path == image_name_norm or item_path.rsplit("/", 1)[-1] == image_basename:
+            return item
+    for item in manifest_items:
+        item_lang = (getattr(item, "lang", "") or "").strip().lower()
+        if item_lang == lang_norm:
+            return item
+    return None
+
+
+def _run_zone_ocr_for_engines(cropped_image: CroppedImage, engines: List[str]) -> Dict[str, OCRResult]:
+    zone = ZoneDef(
+        name="zip_item_ocr",
+        type="ocr",
+        bbox=cropped_image.bbox,
+        engines=list(engines),
+        engine_config={},
+    )
+    results = dispatch_zone_ocr(zone, cropped_image)
+    out: Dict[str, OCRResult] = {}
+    for r in results:
+        out[r.engine] = OCRResult(r.text, r.confidence if r.confidence is not None else 0.0, r.engine)
+    return out
 
 
 def _new_csrf_token() -> str:
@@ -649,23 +731,29 @@ def _prefetch_google_for_zip_items(
     queue_items: List[Any],
     zip_bytes: bytes,
     engines: List[str],
-) -> tuple[Dict[int, bytes], set[int], List[int]]:
+) -> tuple[Dict[int, bytes], Dict[int, CroppedImage], set[int], set[int], set[int], List[int]]:
     """
     Pre-read ZIP images and prefetch Google OCR in batch for ZIP/phase2 runs.
 
     Returns:
       - preloaded image bytes by queue index,
+      - validated cropped image by queue index,
       - indices with image read failure,
+      - indices with missing bbox,
+      - indices where crop validation failed,
       - cache keys (id(image_bytes)) that were injected and must be cleared.
 
     Never raises.
     """
     preloaded_images: Dict[int, bytes] = {}
+    cropped_images: Dict[int, CroppedImage] = {}
     read_failed_indices: set[int] = set()
+    missing_bbox_indices: set[int] = set()
+    crop_required_indices: set[int] = set()
     google_cache_ids: List[int] = []
 
     google_enabled = "google" in engines
-    google_jobs: List[tuple[int, bytes]] = []
+    google_jobs: List[tuple[int, CroppedImage]] = []
 
     for idx, item in enumerate(queue_items):
         try:
@@ -675,11 +763,27 @@ def _prefetch_google_for_zip_items(
             continue
 
         preloaded_images[idx] = image_bytes
+        bbox = _resolve_real_bbox(item)
+        if bbox is None:
+            missing_bbox_indices.add(idx)
+            continue
+        try:
+            cropped_images[idx] = _crop_zip_zone(image_bytes, bbox)
+        except Exception:
+            crop_required_indices.add(idx)
+            continue
         if google_enabled:
-            google_jobs.append((idx, image_bytes))
+            google_jobs.append((idx, cropped_images[idx]))
 
     if not google_enabled or not google_jobs:
-        return preloaded_images, read_failed_indices, google_cache_ids
+        return (
+            preloaded_images,
+            cropped_images,
+            read_failed_indices,
+            missing_bbox_indices,
+            crop_required_indices,
+            google_cache_ids,
+        )
 
     logger.info(
         "zip_google_batch_v2 items=%d chunks=%d",
@@ -689,21 +793,28 @@ def _prefetch_google_for_zip_items(
 
     inserted_ids: List[int] = []
     try:
-        batch_results = google_batch_annotate_images([img for _, img in google_jobs])
+        batch_results = google_batch_annotate_images([cropped.bytes for _, cropped in google_jobs])
         while len(batch_results) < len(google_jobs):
             batch_results.append(OCRResult("", 0.0, "google"))
 
-        for (_, image_bytes), result in zip(google_jobs, batch_results):
-            _google_cache_put(image_bytes, result)
-            inserted_ids.append(id(image_bytes))
+        for (_, cropped), result in zip(google_jobs, batch_results):
+            _google_cache_put(cropped.bytes, result)
+            inserted_ids.append(id(cropped.bytes))
 
         google_cache_ids = inserted_ids
     except Exception:
         if inserted_ids:
             _google_cache_clear(inserted_ids)
-        logger.warning("zip_google_batch_v2 prefetch_failed fallback=single_google")
+        logger.warning("zip_google_batch_v2 prefetch_failed")
 
-    return preloaded_images, read_failed_indices, google_cache_ids
+    return (
+        preloaded_images,
+        cropped_images,
+        read_failed_indices,
+        missing_bbox_indices,
+        crop_required_indices,
+        google_cache_ids,
+    )
 
 
 _VALID_ENGINES = set(ALL_ENGINES)
@@ -746,7 +857,14 @@ async def _process_session(
         contents = process_zip(zip_bytes)
         manifest = build_zip_manifest(zip_bytes)
         queue_items = [item for target in manifest for item in target.items]
-        preloaded_images, read_failed_indices, google_cache_ids = _prefetch_google_for_zip_items(
+        (
+            preloaded_images,
+            cropped_images,
+            read_failed_indices,
+            missing_bbox_indices,
+            crop_required_indices,
+            google_cache_ids,
+        ) = _prefetch_google_for_zip_items(
             queue_items,
             zip_bytes,
             engines,
@@ -821,13 +939,15 @@ async def _process_session(
                 en_source_bytes = preloaded_images.get(en_source_idx) if en_source_idx is not None else None
                 if en_source_bytes is None:
                     en_source_bytes = _read_archive_image(zip_bytes, en_source_image_name)
-                en_source_ocr_results = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    run_ocr_multi,
-                    en_source_bytes,
-                    engines,
-                )
-                _, en_source_best_text, _ = _pick_best_text(en_source_ocr_results)
+                en_source_crop = cropped_images.get(en_source_idx) if en_source_idx is not None else None
+                if en_source_crop is not None:
+                    en_source_ocr_results = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        _run_zone_ocr_for_engines,
+                        en_source_crop,
+                        engines,
+                    )
+                    _, en_source_best_text, _ = _pick_best_text(en_source_ocr_results)
             except Exception:
                 en_source_ocr_results = None
                 en_source_best_text = ""
@@ -863,6 +983,70 @@ async def _process_session(
                         "MANUAL",
                         0.0,
                         "image_read_error",
+                        "{}",
+                        None,
+                        0.0,
+                        None,
+                        None,
+                        0.0,
+                    ),
+                )
+                conn.commit()
+                continue
+            if idx in missing_bbox_indices:
+                counters["images_skipped_total"] += 1
+                counters["images_skipped_by_reason"]["missing_bbox"] = counters["images_skipped_by_reason"].get("missing_bbox", 0) + 1
+                manual_count += 1
+                conn.execute(
+                    """INSERT INTO results
+                       (session_id, lang, image_name, text_name, ref_text,
+                        section_name, section_number, status, score, reason,
+                        ocr_results_json, best_engine, reference_confidence,
+                        reference_score_top1, reference_score_top2, reference_margin)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        session_id,
+                        lang,
+                        image_name,
+                        "",
+                        "",
+                        "",
+                        None,
+                        "MANUAL",
+                        0.0,
+                        "missing_bbox",
+                        "{}",
+                        None,
+                        0.0,
+                        None,
+                        None,
+                        0.0,
+                    ),
+                )
+                conn.commit()
+                continue
+            if idx in crop_required_indices:
+                counters["images_skipped_total"] += 1
+                counters["images_skipped_by_reason"]["crop_required"] = counters["images_skipped_by_reason"].get("crop_required", 0) + 1
+                manual_count += 1
+                conn.execute(
+                    """INSERT INTO results
+                       (session_id, lang, image_name, text_name, ref_text,
+                        section_name, section_number, status, score, reason,
+                        ocr_results_json, best_engine, reference_confidence,
+                        reference_score_top1, reference_score_top2, reference_margin)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        session_id,
+                        lang,
+                        image_name,
+                        "",
+                        "",
+                        "",
+                        None,
+                        "MANUAL",
+                        0.0,
+                        "crop_required",
                         "{}",
                         None,
                         0.0,
@@ -927,10 +1111,19 @@ async def _process_session(
                 },
             )
 
+            cropped_image = cropped_images.get(idx)
+            if cropped_image is None:
+                raise RuntimeError(f"Crop required but missing for {image_name}")
+
             if idx == en_source_idx and en_source_ocr_results is not None:
                 ocr_results = en_source_ocr_results
             else:
-                ocr_results = await asyncio.get_event_loop().run_in_executor(None, run_ocr_multi, image_bytes, engines)
+                ocr_results = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    _run_zone_ocr_for_engines,
+                    cropped_image,
+                    engines,
+                )
 
             best_engine, best_text, best_conf = _pick_best_text(ocr_results)
 
@@ -1283,15 +1476,35 @@ async def decide(result_id: int, decision: str = Form(...)):
 async def debug_ocr(zip_file: UploadFile = File(...)):
     zip_bytes = await zip_file.read()
     contents = process_zip(zip_bytes)
+    manifest = build_zip_manifest(zip_bytes)
+    manifest_items = [item for target in manifest for item in target.items]
     langs = sorted(contents.images.keys())
     if not langs:
         return JSONResponse({"error": "no images found"})
     results = []
     for lang in langs[:2]:
+        image_name = contents.image_names[lang]
         image_bytes = contents.images[lang]
-        ocr_results = await asyncio.get_event_loop().run_in_executor(None, run_ocr_multi, image_bytes, ALL_ENGINES)
+        manifest_item = _select_manifest_item_for_debug(manifest_items, lang, image_name)
+        bbox = _resolve_real_bbox(manifest_item) if manifest_item is not None else None
+        reason = None
+        ocr_results = {}
+        if bbox is None:
+            reason = "missing_bbox"
+        else:
+            try:
+                cropped_image = _crop_zip_zone(image_bytes, bbox)
+                ocr_results = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    _run_zone_ocr_for_engines,
+                    cropped_image,
+                    ALL_ENGINES,
+                )
+            except Exception:
+                reason = "crop_required"
+
         best = max(
-            ocr_results.values(),
+            ocr_results.values() if ocr_results else [],
             key=lambda r: (float(r.confidence) if isinstance(r.confidence, (int, float)) else -1.0),
             default=None,
         )
@@ -1320,7 +1533,8 @@ async def debug_ocr(zip_file: UploadFile = File(...)):
         results.append(
             {
                 "lang": lang,
-                "image_name": contents.image_names[lang],
+                "image_name": image_name,
+                "reason": reason,
                 "ocr_engines": {eng: {"text": r.text[:200], "confidence": r.confidence} for eng, r in ocr_results.items()},
                 "sections": sections_data,
                 "match": ref_info,

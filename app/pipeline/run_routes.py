@@ -50,7 +50,8 @@ from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOL
 from app.pipeline.firestore_store import is_persistence_enabled
 from app.pipeline.persistence import persist_run
 from app.pipeline.logo_matcher import match_logo_zone
-from app.pipeline.preprocessor import load_image, maybe_upscale, scale_bbox, crop_zone_to_png
+from app.pipeline.cropped_image import CroppedImage
+from app.pipeline.preprocessor import load_image, make_cropped_image, maybe_upscale, scale_bbox, crop_zone_to_png
 from app.ocr import (
     google_batch_annotate_images,
     _google_cache_put,
@@ -61,11 +62,11 @@ run_router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
-def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
+def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> CroppedImage:
     """
     Crop image to zone bbox, scaling bbox from template source_size
     to current image dimensions (after optional whole-image upscale).
-    Returns PNG bytes.
+    Returns validated CroppedImage.
     """
     img = load_image(image_bytes)
     img, _ = maybe_upscale(img)
@@ -77,7 +78,16 @@ def _crop_zone(image_bytes: bytes, zone: ZoneDef, source_size: list) -> bytes:
         src_w, src_h = img.width, img.height
 
     bbox_scaled = scale_bbox(zone.bbox, [max(1, src_w), max(1, src_h)], [img.width, img.height])
-    return _guard_png_size(crop_zone_to_png(img, bbox_scaled))
+    cropped_bytes = _guard_png_size(crop_zone_to_png(img, bbox_scaled))
+    return make_cropped_image(
+        image_bytes,
+        bbox_scaled,
+        cropped_bytes,
+        original_width=img.width,
+        original_height=img.height,
+        crop_width=max(1, bbox_scaled[2] - bbox_scaled[0]),
+        crop_height=max(1, bbox_scaled[3] - bbox_scaled[1]),
+    )
 
 
 def _png_dimensions(payload: bytes) -> tuple[int, int]:
@@ -134,7 +144,7 @@ def _prefetch_google_batch(
     Calls google_batch_annotate_images in chunks of 16.
     Injects results into the OCR module cache via _google_cache_put.
 
-    Returns a dict {zone_index: zone_bytes} for zones that were batched,
+    Returns a dict {zone_index: CroppedImage} for zones that were batched,
     so run_routes can pass the SAME bytes object to dispatch_zone_ocr
     (object-identity match required for cache lookup).
 
@@ -168,7 +178,7 @@ def _prefetch_google_batch(
     from app.ocr import OCRResult
 
     for google_mode, jobs in google_jobs_by_mode.items():
-        job_bytes = [zb for _, zb in jobs]
+        job_bytes = [cropped.bytes for _, cropped in jobs]
         try:
             batch_results = google_batch_annotate_images(job_bytes, google_mode=google_mode)
         except Exception:
@@ -178,9 +188,9 @@ def _prefetch_google_batch(
         while len(batch_results) < len(jobs):
             batch_results.append(OCRResult("", 0.0, "google"))
 
-        for (zone_idx, zb), result in zip(jobs, batch_results):
-            _google_cache_put(zb, result)
-            zone_bytes_map[zone_idx] = zb
+        for (zone_idx, cropped), result in zip(jobs, batch_results):
+            _google_cache_put(cropped.bytes, result)
+            zone_bytes_map[zone_idx] = cropped
 
     return zone_bytes_map
 
@@ -265,17 +275,18 @@ async def run_template(
 
             # Use same bytes object if it was batched (logo zones are not batched).
             if i in batched_zone_bytes:
-                zone_bytes = batched_zone_bytes[i]
+                cropped_image = batched_zone_bytes[i]
             else:
                 try:
-                    zone_bytes = _crop_zone(image_bytes, zone, tmpl.source_size)
+                    cropped_image = _crop_zone(image_bytes, zone, tmpl.source_size)
                 except Exception:
-                    zone_bytes = None
+                    cropped_image = None
 
             if zone.type == "logo":
                 # Logo branch: OpenCV only, OCR dispatcher is never called.
                 engine_results = []
-                consensus = _logo_template_match(zone_bytes, zone)
+                logo_bytes = cropped_image.bytes if cropped_image is not None else b""
+                consensus = _logo_template_match(logo_bytes, zone)
                 log_event(
                     "zone_logo_match",
                     run_id=run_id,
@@ -285,7 +296,7 @@ async def run_template(
                     reason=consensus.get("reason"),
                 )
             else:
-                if zone_bytes is None:
+                if cropped_image is None:
                     log_event(
                         "zone_crop_failed",
                         run_id=run_id,
@@ -304,7 +315,7 @@ async def run_template(
                         for engine_name in zone.engines
                     ]
                 else:
-                    crop_width, crop_height = _png_dimensions(zone_bytes)
+                    crop_width, crop_height = _png_dimensions(cropped_image.bytes)
                     for engine_name in zone.engines:
                         log_event(
                             "ocr_payload",
@@ -318,7 +329,7 @@ async def run_template(
                         )
 
                     engine_results = await asyncio.to_thread(
-                        dispatch_zone_ocr, zone, zone_bytes
+                        dispatch_zone_ocr, zone, cropped_image
                     )
 
                 consensus = resolve_consensus(
@@ -412,4 +423,4 @@ async def run_template(
 
     finally:
         if batched_zone_bytes:
-            _google_cache_clear([id(zb) for zb in batched_zone_bytes.values()])
+            _google_cache_clear([id(cropped.bytes) for cropped in batched_zone_bytes.values()])

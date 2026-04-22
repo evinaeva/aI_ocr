@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from app.ocr import run_ocr_multi
+from app.pipeline.cropped_image import CroppedImage
 from app.pipeline.models import ZoneDef
 from app.pipeline.ocr_dispatcher import dispatch_zone_ocr
 
@@ -42,9 +43,21 @@ class TestGoogleModeRouting(unittest.TestCase):
             "app.pipeline.ocr_dispatcher.run_ocr_multi",
             return_value={"google": fake_result},
         ) as mock_run:
-            dispatch_zone_ocr(zone, b"img")
+            dispatch_zone_ocr(
+                zone,
+                CroppedImage(
+                    bytes=b"crop",
+                    bbox=[1, 1, 20, 20],
+                    original_width=100,
+                    original_height=100,
+                    crop_width=19,
+                    crop_height=19,
+                    original_sha256="abc",
+                    cropped=True,
+                ),
+            )
 
-        mock_run.assert_called_once_with(b"img", ["google"], {"google_mode": "text"})
+        mock_run.assert_called_once_with(b"crop", ["google"], {"google_mode": "text"})
 
 
 if __name__ == "__main__":

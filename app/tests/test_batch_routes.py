@@ -9,6 +9,7 @@ import asyncio
 import json
 import unittest
 from unittest.mock import MagicMock, patch
+from app.pipeline.cropped_image import CroppedImage
 
 
 class TestBatchRouterImport(unittest.TestCase):
@@ -47,15 +48,14 @@ class TestBatchJobStore(unittest.TestCase):
         from app.pipeline.batch_routes import _JOBS
         self.assertNotIn("unknown", _JOBS)
 
-    def test_crop_fallback_on_bad_input(self):
-        """_crop_zone_bytes falls back to original bytes on error."""
+    def test_crop_fails_on_bad_input(self):
+        """_crop_zone_bytes must fail hard on crop errors."""
         from app.pipeline.batch_routes import _crop_zone_bytes
         zone = MagicMock()
         zone.bbox = [0, 0, 100, 100]
         zone.engine_config = {}
-        # Bad image bytes — should not raise
-        result = _crop_zone_bytes(b"not-an-image", zone, [440, 1100])
-        self.assertEqual(result, b"not-an-image")
+        with self.assertRaises(RuntimeError):
+            _crop_zone_bytes(b"not-an-image", zone, [440, 1100])
 
 
 class TestGoogleBatchPrefetch(unittest.TestCase):
@@ -83,7 +83,16 @@ class TestGoogleBatchPrefetch(unittest.TestCase):
                    return_value=[fake_result]) as mock_batch, \
              patch("app.pipeline.batch_routes._google_cache_put") as mock_put, \
              patch("app.pipeline.batch_routes._crop_zone_bytes",
-                   return_value=b"fakecrop"):
+                   return_value=CroppedImage(
+                       bytes=b"fakecrop",
+                       bbox=[1, 1, 10, 10],
+                       original_width=100,
+                       original_height=100,
+                       crop_width=9,
+                       crop_height=9,
+                       original_sha256="abc",
+                       cropped=True,
+                   )):
             result = _prefetch_google_for_target(b"imgbytes", [zone], [440, 1100])
 
         mock_batch.assert_called_once()

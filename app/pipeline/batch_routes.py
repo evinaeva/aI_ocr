@@ -39,8 +39,10 @@ from PIL import Image
 
 from app.logging_utils import log_event
 from app.pipeline import template_store
+from app.pipeline.cropped_image import CroppedImage
 from app.pipeline.ocr_dispatcher import dispatch_zone_ocr
 from app.pipeline.consensus import resolve_consensus
+from app.pipeline.preprocessor import make_cropped_image
 from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
 from app.zip_processor import build_zip_manifest
 from app.ocr import (
@@ -73,11 +75,11 @@ def _push_batch_event(job_id: str, event: dict) -> None:
             pass
 
 
-def _crop_zone_bytes(image_bytes: bytes, zone, source_size: list) -> bytes:
+def _crop_zone_bytes(image_bytes: bytes, zone, source_size: list) -> CroppedImage:
     """
     Crop image to zone bbox, scaling from template source_size to actual image size.
     Upscales whole image to at least 1024x768 if needed (per spec).
-    Returns PNG bytes. Never raises (falls back to full image).
+    Returns validated cropped image. Raises on crop failure.
     """
     try:
         img = Image.open(io.BytesIO(image_bytes))
@@ -105,15 +107,26 @@ def _crop_zone_bytes(image_bytes: bytes, zone, source_size: list) -> bytes:
         px2 = max(0, min(int(x2 * scale_x), img_w))
         py2 = max(0, min(int(y2 * scale_y), img_h))
 
+        if px2 <= px1 or py2 <= py1:
+            raise RuntimeError("Zero-area crop — refusing OCR")
         cropped = img.crop((px1, py1, px2, py2))
         buf = io.BytesIO()
         cropped.save(buf, format="PNG")
         buf.seek(0)
+        crop_bytes = buf.getvalue()
         cropped.close()
         img.close()
-        return buf.getvalue()
-    except Exception:
-        return image_bytes
+        return make_cropped_image(
+            image_bytes,
+            [px1, py1, px2, py2],
+            crop_bytes,
+            original_width=img_w,
+            original_height=img_h,
+            crop_width=max(1, px2 - px1),
+            crop_height=max(1, py2 - py1),
+        )
+    except Exception as exc:
+        raise RuntimeError("Crop failed — refusing to send full image to OCR") from exc
 
 
 def _prefetch_google_for_target(
@@ -144,7 +157,7 @@ def _prefetch_google_for_target(
     zone_bytes_map: dict = {}
 
     for google_mode, jobs in google_jobs_by_mode.items():
-        job_bytes = [zb for _, zb in jobs]
+        job_bytes = [cropped.bytes for _, cropped in jobs]
         try:
             batch_results = google_batch_annotate_images(job_bytes, google_mode=google_mode)
         except Exception:
@@ -156,9 +169,9 @@ def _prefetch_google_for_target(
         while len(batch_results) < len(jobs):
             batch_results.append(OCRResult("", 0.0, "google"))
 
-        for (zone_idx, zb), result in zip(jobs, batch_results):
-            _google_cache_put(zb, result)
-            zone_bytes_map[zone_idx] = zb
+        for (zone_idx, cropped), result in zip(jobs, batch_results):
+            _google_cache_put(cropped.bytes, result)
+            zone_bytes_map[zone_idx] = cropped
 
     return zone_bytes_map
 
@@ -203,9 +216,8 @@ def _run_zones_for_target(
                 })
                 continue
 
-            zone_bytes = batched_zone_bytes.get(i) or _crop_zone_bytes(image_bytes, zone, source_size)
-
-            engine_results = dispatch_zone_ocr(zone, zone_bytes)
+            cropped_image = batched_zone_bytes.get(i) or _crop_zone_bytes(image_bytes, zone, source_size)
+            engine_results = dispatch_zone_ocr(zone, cropped_image)
 
             consensus = resolve_consensus(
                 engine_results=engine_results,
@@ -239,7 +251,7 @@ def _run_zones_for_target(
     finally:
         # Clean up Google cache entries
         if batched_zone_bytes:
-            _google_cache_clear([id(zb) for zb in batched_zone_bytes.values()])
+            _google_cache_clear([id(cropped.bytes) for cropped in batched_zone_bytes.values()])
 
     return zone_results
 
