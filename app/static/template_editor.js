@@ -768,6 +768,51 @@
     return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   }
 
+  // Группирует строки результатов по target_id, объединяя текст всех зон одного баннера.
+  function groupResultsByTarget(results) {
+    const order = [];
+    const map = {};
+    results.forEach((row) => {
+      const key = row.target_id || row.image_name || '';
+      if (!map[key]) {
+        map[key] = { _grouped: true, _rows: [], target_id: key, image_name: row.image_name, lang: row.lang, id: row.id };
+        order.push(key);
+      }
+      map[key]._rows.push(row);
+    });
+    return order.map((key) => {
+      const g = map[key];
+      const rows = g._rows;
+      const ocr_results = {};
+      ['google', 'ocrspace'].forEach((engine) => {
+        const texts = rows.map((r) => aggregateEngineText(r, engine)).filter(Boolean);
+        ocr_results[engine] = { text: texts.join('\n') };
+      });
+      const ref_text = rows.map((r) => r.ref_text || '').filter(Boolean).join('\n');
+      const status = rows.some((r) => r.status !== 'PASS') ? 'MANUAL' : 'PASS';
+      const decisions = rows.map((r) => r.manual_decision);
+      let manual_decision = null;
+      if (decisions.every((d) => d === 'ok')) manual_decision = 'ok';
+      else if (decisions.some((d) => d === 'error')) manual_decision = 'error';
+      const ids = rows.map((r) => r.id);
+      const firstManual = rows.find((r) => r.status !== 'PASS') || rows[0];
+      return {
+        ...g,
+        ocr_results,
+        ref_text,
+        status,
+        manual_decision,
+        _ids: ids,
+        validation: firstManual.validation,
+        consensus: firstManual.consensus,
+        reason: firstManual.reason,
+        reference: rows[0].reference,
+        ref_confidence: rows[0].ref_confidence,
+        reference_confidence: rows[0].reference_confidence,
+      };
+    });
+  }
+
   function getSessionReferenceBadgeRow() {
     const meta = state.currentSessionMeta || {};
     const confidence = pickNumber([
@@ -826,7 +871,8 @@
     tbody.innerHTML = '';
     pagination.innerHTML = '';
     const hidePass = $('hide-pass').checked;
-    const visibleRows = hidePass ? state.currentResults.filter((r) => r.status !== 'PASS') : state.currentResults;
+    const grouped = groupResultsByTarget(state.currentResults);
+    const visibleRows = hidePass ? grouped.filter((r) => r.status !== 'PASS') : grouped;
     const orderedRows = visibleRows
       .map((row, originalIndex) => ({ row, originalIndex }))
       .sort((a, b) => {
@@ -879,7 +925,7 @@
 
     renderResultsPagination(currentPage, totalPages);
 
-    state.unresolvedCount = state.currentResults.filter((r) => r.status !== 'PASS' && !r.manual_decision).length;
+    state.unresolvedCount = grouped.filter((r) => r.status !== 'PASS' && !r.manual_decision).length;
     bindReviewButtons();
     bindImageThumbnails();
     updateFinishButtons();
@@ -958,10 +1004,7 @@
     if (conf >= 0.8) band = 'HIGH';
     else if (conf >= 0.5) band = 'MEDIUM';
 
-    const tooltip = `confidence=${conf.toFixed(2)}
-score_top1=${s1 === null ? 'none' : s1.toFixed(2)}
-score_top2=${s2 === null ? 'none' : s2.toFixed(2)}
-margin=${(margin === null ? 0 : margin).toFixed(2)}`;
+    const tooltip = `confidence=${conf.toFixed(2)}\nscore_top1=${s1 === null ? 'none' : s1.toFixed(2)}\nscore_top2=${s2 === null ? 'none' : s2.toFixed(2)}\nmargin=${(margin === null ? 0 : margin).toFixed(2)}`;
 
     return `<span class="ref-confidence-badge ref-${band.toLowerCase()}" data-tooltip="${esc(tooltip)}">${band}</span>`;
   }
@@ -999,31 +1042,36 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
 
   function reviewHtml(row, st) {
     if (st !== 'MANUAL') return row.manual_decision || '';
+    const ids = (row._ids || [row.id]).join(',');
     const okClass = row.manual_decision === 'ok' ? 'btn-primary' : 'btn-secondary';
     const errClass = row.manual_decision === 'error' ? 'btn-primary' : 'btn-secondary';
-    return `<div class="review-actions"><button class='btn btn-xs ${okClass}' data-id='${row.id}' data-d='ok'>OK</button><button class='btn btn-xs ${errClass}' data-id='${row.id}' data-d='error'>ERROR</button></div>`;
+    return `<div class="review-actions"><button class='btn btn-xs ${okClass}' data-ids='${esc(ids)}' data-d='ok'>OK</button><button class='btn btn-xs ${errClass}' data-ids='${esc(ids)}' data-d='error'>ERROR</button></div>`;
   }
 
   function bindReviewButtons() {
-    document.querySelectorAll('[data-id][data-d]').forEach((b) => {
+    document.querySelectorAll('[data-ids][data-d]').forEach((b) => {
       b.onclick = async () => {
-        const fd = new FormData();
-        fd.append('decision', b.dataset.d);
-        const resp = await fetch(`/api/decide/${b.dataset.id}`, { method: 'POST', body: fd });
-        if (!resp.ok) {
-          const text = await resp.text();
-          showError('decide', 'HTTP ' + resp.status + '\n' + text.slice(0, 1000));
-          return;
+        const ids = b.dataset.ids.split(',').filter(Boolean);
+        let lastData = null;
+        for (const id of ids) {
+          const fd = new FormData();
+          fd.append('decision', b.dataset.d);
+          const resp = await fetch(`/api/decide/${id}`, { method: 'POST', body: fd });
+          if (!resp.ok) {
+            const text = await resp.text();
+            showError('decide', 'HTTP ' + resp.status + '\n' + text.slice(0, 1000));
+            return;
+          }
+          lastData = await resp.json();
         }
-        const data = await resp.json();
-        if (data && data.session_id) {
-          state.sessionId = data.session_id;
+        if (lastData && lastData.session_id) {
+          state.sessionId = lastData.session_id;
         }
-        const row = state.currentResults.find((r) => String(r.id) === String(b.dataset.id));
-        if (row) {
-          row.manual_decision = b.dataset.d;
-          updateFinishButtons();
-        }
+        ids.forEach((id) => {
+          const row = state.currentResults.find((r) => String(r.id) === String(id));
+          if (row) row.manual_decision = b.dataset.d;
+        });
+        updateFinishButtons();
         await loadResults();
       };
     });
@@ -1039,7 +1087,8 @@ margin=${(margin === null ? 0 : margin).toFixed(2)}`;
   function updateFinishButtons() {
     $('btn-finish-top').disabled = false;
     const designerIssuesBtn = $('btn-finish-bottom');
-    const allFinalized = state.currentResults.every((r) => {
+    const grouped = groupResultsByTarget(state.currentResults);
+    const allFinalized = grouped.every((r) => {
       if (r.status === 'PASS') return true;
       return r.manual_decision === 'ok' || r.manual_decision === 'error';
     });
