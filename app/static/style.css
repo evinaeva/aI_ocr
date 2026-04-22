@@ -548,6 +548,19 @@ body {
   margin-top: 4px;
   text-align: center;
 }
+.img-repeat-placeholder {
+  color: var(--muted);
+  display: inline-block;
+  padding-top: 32px;
+}
+
+.zone-cell {
+  font-size: 11px;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
 
 /* Text columns */
 .text-cell {
