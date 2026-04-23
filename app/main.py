@@ -1004,8 +1004,7 @@ async def _process_session(
                                 _, zt, _ = _pick_best_text(en_source_ocr_cache[zi])
                                 if zt:
                                     zone_texts.append(zt)
-                        en_source_best_text = "
-".join(zone_texts)
+                        en_source_best_text = "\n".join(zone_texts)
                 elif not target_zones and en_source_bytes is not None:
                     counters["ocr_dispatch_reached_total"] += 1
                     _raw_en = await asyncio.get_event_loop().run_in_executor(
