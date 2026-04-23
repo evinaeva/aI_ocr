@@ -768,14 +768,18 @@
     return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   }
 
-  // Группирует строки результатов по target_id, объединяя текст всех зон одного баннера.
-  function groupResultsByTarget(results) {
+  // Groups crop-level results by their source image (image_name = full archive path,
+  // e.g. "BGM-7737/en.png"). Crops from the same source image are merged into one row;
+  // their OCR texts are concatenated in DB order (= manual zone definition order).
+  // image_name already includes the folder prefix, so "folder1/en.png" != "folder2/en.png".
+  function groupResultsBySourceImage(results) {
     const order = [];
     const map = {};
     results.forEach((row) => {
-      const key = row.target_id || row.image_name || '';
+      // image_name is the full archive path — unique per source image across all folders.
+      const key = row.image_name || String(row.id);
       if (!map[key]) {
-        map[key] = { _grouped: true, _rows: [], target_id: key, image_name: row.image_name, lang: row.lang, id: row.id };
+        map[key] = { _rows: [], image_name: row.image_name, target_id: row.target_id, lang: row.lang, id: row.id };
         order.push(key);
       }
       map[key]._rows.push(row);
@@ -783,6 +787,7 @@
     return order.map((key) => {
       const g = map[key];
       const rows = g._rows;
+      // Merge OCR text per engine in existing row order (= zone definition order from DB).
       const ocr_results = {};
       ['google', 'ocrspace'].forEach((engine) => {
         const texts = rows.map((r) => aggregateEngineText(r, engine)).filter(Boolean);
@@ -794,7 +799,7 @@
       let manual_decision = null;
       if (decisions.every((d) => d === 'ok')) manual_decision = 'ok';
       else if (decisions.some((d) => d === 'error')) manual_decision = 'error';
-      const ids = rows.map((r) => r.id);
+      const _ids = rows.map((r) => r.id);
       const firstManual = rows.find((r) => r.status !== 'PASS') || rows[0];
       return {
         ...g,
@@ -802,7 +807,7 @@
         ref_text,
         status,
         manual_decision,
-        _ids: ids,
+        _ids,
         validation: firstManual.validation,
         consensus: firstManual.consensus,
         reason: firstManual.reason,
@@ -871,7 +876,7 @@
     tbody.innerHTML = '';
     pagination.innerHTML = '';
     const hidePass = $('hide-pass').checked;
-    const grouped = groupResultsByTarget(state.currentResults);
+    const grouped = groupResultsBySourceImage(state.currentResults);
     const visibleRows = hidePass ? grouped.filter((r) => r.status !== 'PASS') : grouped;
     const orderedRows = visibleRows
       .map((row, originalIndex) => ({ row, originalIndex }))
@@ -1087,7 +1092,7 @@
   function updateFinishButtons() {
     $('btn-finish-top').disabled = false;
     const designerIssuesBtn = $('btn-finish-bottom');
-    const grouped = groupResultsByTarget(state.currentResults);
+    const grouped = groupResultsBySourceImage(state.currentResults);
     const allFinalized = grouped.every((r) => {
       if (r.status === 'PASS') return true;
       return r.manual_decision === 'ok' || r.manual_decision === 'error';
