@@ -770,13 +770,12 @@
 
   // Groups crop-level results by their source image (image_name = full archive path,
   // e.g. "BGM-7737/en.png"). Crops from the same source image are merged into one row;
-  // their OCR texts are concatenated in DB order (= manual zone definition order).
-  // image_name already includes the folder prefix, so "folder1/en.png" != "folder2/en.png".
+  // OCR texts are concatenated in DB order (= manual zone definition order).
+  // ref_text is shared across all crops of the same image — taken from the first row only.
   function groupResultsBySourceImage(results) {
     const order = [];
     const map = {};
     results.forEach((row) => {
-      // image_name is the full archive path — unique per source image across all folders.
       const key = row.image_name || String(row.id);
       if (!map[key]) {
         map[key] = { _rows: [], image_name: row.image_name, target_id: row.target_id, lang: row.lang, id: row.id };
@@ -787,13 +786,13 @@
     return order.map((key) => {
       const g = map[key];
       const rows = g._rows;
-      // Merge OCR text per engine in existing row order (= zone definition order from DB).
       const ocr_results = {};
       ['google', 'ocrspace'].forEach((engine) => {
         const texts = rows.map((r) => aggregateEngineText(r, engine)).filter(Boolean);
         ocr_results[engine] = { text: texts.join('\n') };
       });
-      const ref_text = rows.map((r) => r.ref_text || '').filter(Boolean).join('\n');
+      // ref_text is the same for all crops of one image — use the first row's value.
+      const ref_text = rows[0].ref_text || '';
       const status = rows.some((r) => r.status !== 'PASS') ? 'MANUAL' : 'PASS';
       const decisions = rows.map((r) => r.manual_decision);
       let manual_decision = null;
