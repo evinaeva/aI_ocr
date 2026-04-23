@@ -1385,6 +1385,20 @@ async def _process_session(
                         )
                         ref_text = clean_for_display(_section_content(localized_reference)) if localized_reference is not None else ""
 
+                        # Re-evaluate status using localized OCR vs localized reference.
+                        # English status is based on aggregated EN zones; for other
+                        # languages we compare this row's OCR against the localized section.
+                        if localized_reference is not None and best_text:
+                            loc_ocr = normalize_strict(best_text)
+                            loc_ref = normalize_strict(_section_content(localized_reference))
+                            if loc_ocr and loc_ref:
+                                if loc_ocr == loc_ref:
+                                    status = "PASS"
+                                    reason = "strict_equal"
+                                else:
+                                    status = "MANUAL"
+                                    reason = "localized_mismatch"
+
                 logger.info("lang=%s status=%s reason=%s section=%s", lang, status, reason, section_name_found)
 
             counters["images_processed_total"] += 1
