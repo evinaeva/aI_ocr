@@ -951,6 +951,11 @@ async def _process_session(
         en_source_image_name = queue_items[en_source_idx].archive_path if en_source_idx is not None else None
         en_source_ocr_results = None
         en_source_best_text = ""
+        en_source_zone_indices = (
+            [i for i in en_item_indices if queue_items[i].archive_path == en_source_image_name]
+            if en_source_image_name else []
+        )
+        en_source_ocr_cache: dict = {}
 
         def _res_text(res: object) -> str:
             raw_text = res.get("text", "") if isinstance(res, dict) else getattr(res, "text", "")
@@ -982,14 +987,25 @@ async def _process_session(
                     en_source_bytes = _read_archive_image(zip_bytes, en_source_image_name)
                 en_source_crop = cropped_images.get(en_source_idx) if en_source_idx is not None else None
                 if en_source_crop is not None:
-                    counters["ocr_dispatch_reached_total"] += 1
-                    en_source_ocr_results = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        _run_zone_ocr_for_engines,
-                        en_source_crop,
-                        engines,
-                    )
-                    _, en_source_best_text, _ = _pick_best_text(en_source_ocr_results)
+                    for zi in en_source_zone_indices:
+                        zc = cropped_images.get(zi)
+                        if zc is None:
+                            continue
+                        counters["ocr_dispatch_reached_total"] += 1
+                        zocr = await asyncio.get_event_loop().run_in_executor(
+                            None, _run_zone_ocr_for_engines, zc, engines,
+                        )
+                        en_source_ocr_cache[zi] = zocr
+                    if en_source_ocr_cache:
+                        en_source_ocr_results = en_source_ocr_cache.get(en_source_idx)
+                        zone_texts = []
+                        for zi in en_source_zone_indices:
+                            if zi in en_source_ocr_cache:
+                                _, zt, _ = _pick_best_text(en_source_ocr_cache[zi])
+                                if zt:
+                                    zone_texts.append(zt)
+                        en_source_best_text = "
+".join(zone_texts)
                 elif not target_zones and en_source_bytes is not None:
                     counters["ocr_dispatch_reached_total"] += 1
                     _raw_en = await asyncio.get_event_loop().run_in_executor(
@@ -1228,7 +1244,9 @@ async def _process_session(
             if cropped_image is None and target_zones:
                 raise RuntimeError(f"Crop required but missing for {image_name}")
 
-            if idx == en_source_idx and en_source_ocr_results is not None:
+            if idx in en_source_ocr_cache:
+                ocr_results = en_source_ocr_cache[idx]
+            elif idx == en_source_idx and en_source_ocr_results is not None:
                 ocr_results = en_source_ocr_results
             elif cropped_image is not None:
                 counters["ocr_dispatch_reached_total"] += 1
