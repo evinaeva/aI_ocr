@@ -168,9 +168,6 @@
       renderTargets();
       await loadSavedTemplates();
       await autoSelectMatchingTemplate();
-      // После загрузки манифеста зон ещё нет. Держим кнопку «Проверить локализацию»
-      // заблокированной пока пользователь не определит хотя бы одну зону для каждого target.
-      // Не включать её только по en_available.
       updateCheckButton();
       setStatus('Parse ZIP', 'OK');
     } catch (e) {
@@ -468,7 +465,6 @@
       const row = document.createElement('div');
       row.className = 'zone-row';
       const dataTarget = String(t.target_id || '');
-      // Отображаем полный target_id на нескольких строках, разделяя по "/".
       const parts = dataTarget.split('/').filter((p) => p);
       const display = parts.map((p) => esc(p)).join('<br>');
       row.innerHTML = `<button class="btn btn-xs" data-target="${esc(dataTarget)}" title="${esc(dataTarget)}">${display}</button> ${t.en_available ? '' : '<span style="color:#dc2626">en не найден</span>'}`;
@@ -478,9 +474,6 @@
     if (state.targets.length) openTarget(state.targets[0]);
   }
 
-  // Проверяет, можно ли включать кнопку «Проверить локализацию».
-  // Учитываем только runnable-targets (с доступным en preview), иначе кнопку
-  // можно заблокировать навсегда на таргете, где зоны физически нельзя разметить.
   function updateCheckButton() {
     const runnableTargets = state.targets.filter((t) => t.en_available);
     if (!runnableTargets.length) {
@@ -497,7 +490,6 @@
   async function openTarget(t) {
     state.currentTarget = t.target_id;
     state.selected = -1;
-    // Пересчитываем состояние кнопки при смене target; preview availability не влияет.
     updateCheckButton();
     $('target-msg').textContent = t.en_available ? '' : 'en не найден';
     if (!t.en_available) {
@@ -516,7 +508,6 @@
       draw();
       renderZones();
     };
-    // В src используем полный encodeURIComponent(target_id) без split().
     img.src = `/api/phase2/preview/${encodeURIComponent(state.uploadId)}/${encodeURIComponent(t.target_id)}`;
   }
 
@@ -646,7 +637,6 @@
       zl.appendChild(row);
     });
     syncForm();
-    // После создания или удаления зон обновляем состояние кнопки.
     updateCheckButton();
   }
 
@@ -768,10 +758,6 @@
     return value.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
   }
 
-  // Groups crop-level results by their source image (image_name = full archive path,
-  // e.g. "BGM-7737/en.png"). Crops from the same source image are merged into one row;
-  // OCR texts are concatenated in DB order (= manual zone definition order).
-  // ref_text is shared across all crops of the same image — taken from the first row only.
   function groupResultsBySourceImage(results) {
     const order = [];
     const map = {};
@@ -787,7 +773,7 @@
       const g = map[key];
       const rows = g._rows;
       const ocr_results = {};
-      ['google', 'ocrspace'].forEach((engine) => {
+      ['google', 'azure', 'ocrspace'].forEach((engine) => {
         const texts = rows.map((r) => aggregateEngineText(r, engine)).filter(Boolean);
         ocr_results[engine] = { text: texts.join('\n') };
       });
@@ -910,13 +896,13 @@
       tr.innerHTML = `
         <td><div class="result-thumb-wrap"><img class="result-thumb js-modal-thumb" src="${imgUrl}" alt="${esc(row.image_name || '')}" data-full="${imgUrl}"><div class="result-thumb-lang">${esc(getThumbLangCode(row.image_name || '', row.lang))}</div></div></td>
         <td class="text-cell" dir='${rtl}' data-engine="google"></td>
-        <!-- <td class="text-cell" dir='${rtl}' data-engine="azure"></td> -->
+        <td class="text-cell" dir='${rtl}' data-engine="azure"></td>
         <td class="text-cell" dir='${rtl}' data-engine="ocrspace"></td>
         <td class="text-cell" dir='${rtl}' data-engine="reference"></td>
         <td class="status-cell" data-tooltip="${esc(statusReason)}"><span class="status-badge ${st === 'PASS' ? 'status-pass' : 'status-manual'}">${st}</span></td>
         <td>${reviewHtml(row, st)}</td>`;
 
-      ['google', 'ocrspace'].forEach((engine) => {
+      ['google', 'azure', 'ocrspace'].forEach((engine) => {
         const td = tr.querySelector(`td[data-engine="${engine}"]`);
         td.textContent = normalizeTextForDisplay(aggregateEngineText(row, engine));
         td.insertAdjacentHTML('beforeend', renderConfidence(row, engine));
