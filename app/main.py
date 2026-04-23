@@ -1022,6 +1022,9 @@ async def _process_session(
         missing_en_ocr_text = not bool(en_source_best_text)
 
         pass_count = fail_count = manual_count = 0
+        # Collect per-image OCR and localized ref for post-loop aggregated comparison.
+        image_ocr_accumulator: Dict[str, List[str]] = {}
+        image_localized_ref: Dict[str, str] = {}
 
         for idx, item in enumerate(queue_items):
             lang = item.lang or "und"
@@ -1268,6 +1271,9 @@ async def _process_session(
 
             ocr_results_display = {eng: clean_for_display(_res_text(res)) for eng, res in ocr_results.items()}
 
+            if best_text:
+                image_ocr_accumulator.setdefault(image_name, []).append(best_text)
+
             en_ocr_text = en_source_best_text
 
             logger.info(
@@ -1385,19 +1391,11 @@ async def _process_session(
                         )
                         ref_text = clean_for_display(_section_content(localized_reference)) if localized_reference is not None else ""
 
-                        # Re-evaluate status using localized OCR vs localized reference.
-                        # English status is based on aggregated EN zones; for other
-                        # languages we compare this row's OCR against the localized section.
-                        if localized_reference is not None and best_text:
-                            loc_ocr = normalize_strict(best_text)
-                            loc_ref = normalize_strict(_section_content(localized_reference))
-                            if loc_ocr and loc_ref:
-                                if loc_ocr == loc_ref:
-                                    status = "PASS"
-                                    reason = "strict_equal"
-                                else:
-                                    status = "MANUAL"
-                                    reason = "localized_mismatch"
+                        # Accumulate OCR texts and localized ref for post-loop aggregated comparison.
+                        if image_name not in image_localized_ref:
+                            loc_ref_n = normalize_strict(_section_content(localized_reference))
+                            if loc_ref_n:
+                                image_localized_ref[image_name] = loc_ref_n
 
                 logger.info("lang=%s status=%s reason=%s section=%s", lang, status, reason, section_name_found)
 
@@ -1461,6 +1459,33 @@ async def _process_session(
                     "best_engine": best_engine,
                 },
             )
+
+        # Post-loop: re-evaluate each image status using aggregated OCR vs localized ref.
+        # This correctly handles multi-zone images (same as frontend groupResultsBySourceImage).
+        for img_name, ocr_texts in image_ocr_accumulator.items():
+            ref_norm = image_localized_ref.get(img_name)
+            if not ref_norm:
+                continue
+            agg_norm = normalize_strict("\n".join(ocr_texts))
+            if not agg_norm:
+                continue
+            new_status = "PASS" if agg_norm == ref_norm else "MANUAL"
+            new_reason = "strict_equal" if new_status == "PASS" else "localized_mismatch"
+            conn.execute(
+                """UPDATE results SET status=?, reason=?
+                   WHERE session_id=? AND image_name=?
+                   AND reason NOT IN ('image_read_error', 'missing_bbox', 'crop_required')""",
+                (new_status, new_reason, session_id, img_name),
+            )
+        conn.commit()
+
+        # Recount from DB after status updates.
+        _counts = conn.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN status='PASS' THEN 1 ELSE 0 END) FROM results WHERE session_id=?",
+            (session_id,),
+        ).fetchone()
+        pass_count = int(_counts[1] or 0)
+        manual_count = int(_counts[0] or 0) - pass_count
 
         logger.info(
             "session_row_stats session_id=%s rows_by_reason=%s",
