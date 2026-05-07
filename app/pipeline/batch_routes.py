@@ -21,6 +21,11 @@ _prefetch_google_batch (imported from run_routes) before each target's zone loop
 
 Progress: uses module-level _batch_sse_queues (asyncio.Queue per job_id), separate
 from main.py's _sse_queues to avoid key collisions.
+
+PASS/MANUAL: an OK zone is downgraded to MANUAL with reason `no_text_match`
+when the validation block reports `match_pass=False`. Levenshtein and the
+0.85 threshold remain in the validation block as evidence, mirroring
+run_routes.
 """
 from __future__ import annotations
 
@@ -43,7 +48,7 @@ from app.pipeline.cropped_image import CroppedImage
 from app.pipeline.ocr_dispatcher import dispatch_zone_ocr
 from app.pipeline.consensus import resolve_consensus
 from app.pipeline.preprocessor import make_cropped_image
-from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
+from app.pipeline.similarity import build_validation_result
 from app.zip_processor import build_zip_manifest
 from app.ocr import (
     google_batch_annotate_images,
@@ -134,13 +139,7 @@ def _prefetch_google_for_target(
     zones: list,
     source_size: list,
 ) -> dict:
-    """
-    Batch-prefetch Google Vision for all zones in a single target image.
-    Chunks at ≤16 per batch_annotate_images call.
-    Injects results into the OCR module cache.
-    Returns {zone_index: zone_bytes} for cache-hit zones.
-    Never raises.
-    """
+    """Batched Google Vision prefetch for all zones in a single target image."""
     google_jobs_by_mode: dict = {}
 
     for i, zone in enumerate(zones):
@@ -225,7 +224,7 @@ def _run_zones_for_target(
             )
 
             selected_text = consensus.get("selected_text") or ""
-            validation_block, sim_raw = build_validation_result(
+            validation_block, _sim = build_validation_result(
                 lang=lang,
                 zone_name=zone.name,
                 expected_texts=getattr(tmpl, "expected_texts", None),
@@ -233,13 +232,14 @@ def _run_zones_for_target(
                 run_id=run_id,
             )
 
+            # PASS / MANUAL: downgrade only when validation actually ran.
             if (
-                sim_raw is not None
-                and sim_raw < SIMILARITY_THRESHOLD
+                validation_block.get("validation_applied") is True
+                and validation_block.get("match_pass") is False
                 and consensus.get("zone_status") == "OK"
             ):
                 consensus["zone_status"] = "MANUAL"
-                consensus["reason"] = "low_similarity"
+                consensus["reason"] = "no_text_match"
 
             zone_results.append({
                 "zone_name": zone.name,
