@@ -575,6 +575,22 @@ body {
 }
 .text-line { display: block; min-height: 1.4em; }
 
+/* OCR vs reference char-level diff highlights.
+   .diff-add  — char is in the reference but missing from the OCR
+                (yellow on the reference cell).
+   .diff-del  — char is in the OCR but absent from the reference
+                (red on each engine's OCR cell). */
+.diff-add {
+  background: rgba(255, 215, 0, 0.35);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.diff-del {
+  background: rgba(255, 80, 80, 0.45);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
 /* Status badge */
 .badge {
   display: inline-block;
