@@ -31,13 +31,18 @@ class TestNormalizeLevels(unittest.TestCase):
         for ch in ("/", "\\", "|", ":", ";"):
             self.assertNotIn(ch, n, f"strict must drop {ch!r}")
 
-    def test_strict_drops_decoration_brackets(self):
-        # `[ ... ]` and `< ... >` around plain text are decoration; image OCR
-        # never produces them, so they must not block PASS.
+    def test_strict_keeps_decoration_brackets(self):
+        # Brackets are kept on purpose: a reference like
+        # `[ HESAB YARADIN ]` should NOT silently match a bracket-less
+        # OCR output. Operators must clean decoration brackets out of
+        # the reference text manually if they're not really part of
+        # the design.
         n_sq = normalize("[ HESAB YARADIN ]", "strict")
-        self.assertEqual(n_sq, "hesab yaradin")
+        self.assertIn("[", n_sq)
+        self.assertIn("]", n_sq)
         n_an = normalize("<BUY TOKENS>", "strict")
-        self.assertEqual(n_an, "buy tokens")
+        self.assertIn("<", n_an)
+        self.assertIn(">", n_an)
 
     def test_strict_lowercases_and_collapses(self):
         self.assertEqual(normalize("Hello   World", "strict"), "hello world")
@@ -58,16 +63,12 @@ class TestNormalizeLevels(unittest.TestCase):
         self.assertIn("hi", n)
         self.assertIn("buy", n)
 
-    def test_soft_strips_non_whitelisted_brackets(self):
+    def test_soft_keeps_non_whitelisted_brackets(self):
         # Whitelist is bypassed ("BUY TOKENS" is not a placeholder name)
-        # but the surrounding brackets are still treated as decoration
-        # and removed.
+        # so the surrounding brackets are kept and will block a PASS
+        # against an OCR output that lacks them.
         n = normalize("Click <BUY TOKENS> now", "soft")
-        self.assertNotIn("<", n)
-        self.assertNotIn(">", n)
-        self.assertIn("buy tokens", n)
-        self.assertIn("click", n)
-        self.assertIn("now", n)
+        self.assertIn("<buy tokens>", n)
 
     def test_consensus_strips_punctuation_keeps_placeholder_syntax(self):
         n = normalize("Hello, world! `code` %X% <Y> [Z]", "consensus")
@@ -125,12 +126,13 @@ class TestCompareLines(unittest.TestCase):
         r = compare_lines("Buy now!", "Buy now", level="strict")
         self.assertFalse(r["pass"])
 
-    def test_decoration_brackets_do_not_block_pass(self):
-        # Reference wraps text in `[ ... ]` (decoration only). OCR has
-        # the bare text. With strict/soft policy this must PASS.
+    def test_decoration_brackets_block_pass(self):
+        # Reference wraps text in `[ ... ]` while the OCR has none.
+        # Strict policy treats this as a real mismatch (false MANUAL
+        # > false PASS).
         r = compare_lines("HESAB YARADIN", "[ HESAB YARADIN ]", level="strict")
-        self.assertTrue(r["pass"])
-        self.assertEqual(r["mode"], "exact")
+        self.assertFalse(r["pass"])
+        self.assertEqual(r["mode"], "none")
 
     def test_both_empty_pass(self):
         r = compare_lines("", "", level="soft")

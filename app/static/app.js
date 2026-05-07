@@ -28,6 +28,10 @@ const state = {
   engines: [],   // engines used in current session
 };
 
+// Expose to window for DevTools debugging — `state.engines` is the
+// single source of truth for the dynamic table header rendering.
+if (typeof window !== 'undefined') { window.state = state; }
+
 // ── DOM refs ────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const $uploadSection   = $('upload-section');

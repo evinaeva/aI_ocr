@@ -335,24 +335,11 @@ def _ocr_azure(image_bytes: bytes) -> Optional[tuple]:
 
 # ─────────────────────────── OCR.Space ───────────────────────────────────────
 
-def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple]:
-    """
-    OCR.Space Engine 3.
-    OCR.Space API does not provide stable word-level confidence in this flow,
-    so confidence is returned as None to avoid synthetic values.
-    """
-    api_key = os.getenv("OCR_SPACE_API_KEY", "").strip()
-    if not api_key:
-        return None
-    if image_bytes[:4] == b'\x89PNG':
-        mime = "image/png"
-    elif image_bytes[:2] == b'\xff\xd8':
-        mime = "image/jpeg"
-    elif image_bytes[:4] == b'GIF8':
-        mime = "image/gif"
-    else:
-        mime = "image/jpeg"
-    img_b64 = base64.b64encode(image_bytes).decode()
+OCRSPACE_MAX_ATTEMPTS = 3
+
+
+def _ocr_ocrspace_once(api_key, mime, img_b64, attempt):
+    """One OCR.Space request. Returns (text, None) on success, None on transient/API failure."""
     try:
         with httpx.Client(timeout=60) as client:
             r = client.post(
@@ -372,7 +359,7 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple]:
             data = r.json()
         if data.get("IsErroredOnProcessing"):
             err_msgs = data.get("ErrorMessage", [])
-            logger.warning("OCR.Space error: %s", err_msgs)
+            logger.warning("OCR.Space error (attempt %d): %s", attempt, err_msgs)
             return None
         exit_code = data.get("OCRExitCode", 0)
         if exit_code not in (1, 2):
@@ -385,8 +372,37 @@ def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple]:
             return None
         return (text, None)
     except Exception as exc:
-        logger.warning("OCR.Space exception: %s", exc)
+        logger.warning("OCR.Space exception (attempt %d): %s", attempt, exc)
         return None
+
+
+def _ocr_ocrspace(image_bytes: bytes) -> Optional[tuple]:
+    """OCR.Space Engine 3 with up to OCRSPACE_MAX_ATTEMPTS retries on
+    transient or empty responses. Confidence is returned as None — the
+    API does not provide stable per-word confidence in this flow.
+
+    Retries are sequential: OCR.Space rate-limits per API key, so
+    parallel retries against the same key would only trip the same
+    server-side limit. Each attempt re-uses the same payload.
+    """
+    api_key = os.getenv("OCR_SPACE_API_KEY", "").strip()
+    if not api_key:
+        return None
+    if image_bytes[:4] == b'\x89PNG':
+        mime = "image/png"
+    elif image_bytes[:2] == b'\xff\xd8':
+        mime = "image/jpeg"
+    elif image_bytes[:4] == b'GIF8':
+        mime = "image/gif"
+    else:
+        mime = "image/jpeg"
+    img_b64 = base64.b64encode(image_bytes).decode()
+    for attempt in range(1, OCRSPACE_MAX_ATTEMPTS + 1):
+        result = _ocr_ocrspace_once(api_key, mime, img_b64, attempt)
+        if result is not None:
+            return result
+    logger.warning("OCR.Space gave up after %d attempts", OCRSPACE_MAX_ATTEMPTS)
+    return None
 
 
 _ENGINE_FNS = {
