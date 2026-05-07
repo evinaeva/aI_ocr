@@ -753,6 +753,29 @@
     return zones.map((z) => z.text || '').join('');
   }
 
+  // Display-side normalization: same idea as `_pre_clean` in
+  // app/normalizer.py — strip the chars that comparison strips so the
+  // operator never sees a phantom difference (BiDi marks, zero-width,
+  // decoration brackets `< > [ ]`, emoji, ellipsis, dashes/quotes).
+  // Case is intentionally preserved so the operator reads natural
+  // text; the diff itself ignores case (see diffOcrVsRefCI).
+  function displayNormalize(s) {
+    if (!s) return '';
+    return String(s)
+      .replace(/\r\n?/g, '\n')
+      .replace(/[\t ]+\n/g, '\n')
+      .replace(/[\t ]+$/g, '')
+      .replace(/^\uFEFF/, '')
+      .replace(/[\u{1F000}-\u{1FFFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE00}-\u{FE0F}]/gu, '')
+      .replace(/[\u200E-\u200F\u202A-\u202E]/g, '')
+      .replace(/[\u200B-\u200D\uFEFF]/g, '')
+      .replace(/[\u2013\u2014\u2015\u2012\u2011]/g, '-')
+      .replace(/[\u201C\u201D\u00AB\u00BB]/g, '"')
+      .replace(/[\u2018\u2019\u2039\u203A]/g, "'")
+      .replace(/\u2026/g, '...')
+      .replace(/[<>\[\]]/g, '');
+  }
+
   // Char-level diff (LCS) used to highlight OCR vs reference in the
   // results table. Output ops: {op: 'eq'|'del'|'add', char}
   //   'eq'  — char is in both OCR and reference
@@ -834,29 +857,49 @@
   // Each non-empty line is wrapped in <span class="text-line"> so layout
   // matches the rest of the cell typography.
   function diffOcrVsRef(ocrText, refText) {
-    const a = diffPreClean(ocrText);
-    const b = diffPreClean(refText);
-    const ops = charDiff(a, b);
+    return diffOcrVsRefCore(diffPreClean(ocrText), diffPreClean(refText), false);
+  }
+
+  // Case-insensitive variant. Used in the table where comparison
+  // ignores case — we don't want INSTANTLY/instantly to highlight.
+  // Operates on already-display-normalized strings.
+  function diffOcrVsRefCI(ocrDisplay, refDisplay) {
+    return diffOcrVsRefCore(ocrDisplay, refDisplay, true);
+  }
+
+  function diffOcrVsRefCore(a, b, caseInsensitive) {
+    const aCmp = caseInsensitive ? a.toLowerCase() : a;
+    const bCmp = caseInsensitive ? b.toLowerCase() : b;
+    const ops = charDiff(aCmp, bCmp);
 
     const ocrLines = [];
     const refLines = [];
     let curOcr = '';
     let curRef = '';
+    let ai = 0, bi = 0;
     const flushOcr = () => { ocrLines.push(curOcr); curOcr = ''; };
     const flushRef = () => { refLines.push(curRef); curRef = ''; };
 
+    // Walk the diff ops; emit ORIGINAL-case characters from a/b
+    // (not the lowercased compare strings) so the rendered text
+    // preserves natural case while diff still ignores case.
     for (let k = 0; k < ops.length; k++) {
       const op = ops[k];
-      const c = op.char;
       if (op.op === 'eq') {
+        const c = a[ai];
+        ai++; bi++;
         if (c === '\n') { flushOcr(); flushRef(); continue; }
         const e = esc(c);
         curOcr += e;
-        curRef += e;
+        curRef += esc(b[bi - 1]); // ref-side keeps its own original case
       } else if (op.op === 'del') {
+        const c = a[ai];
+        ai++;
         if (c === '\n') { flushOcr(); continue; }
         curOcr += '<span class="diff-del">' + esc(c) + '</span>';
       } else { // 'add'
+        const c = b[bi];
+        bi++;
         if (c === '\n') { flushRef(); continue; }
         curRef += '<span class="diff-add">' + esc(c) + '</span>';
       }
@@ -1026,39 +1069,48 @@
         <td class="status-cell" data-tooltip="${esc(statusReason)}"><span class="status-badge ${st === 'PASS' ? 'status-pass' : 'status-manual'}">${st}</span></td>
         <td>${reviewHtml(row, st)}</td>`;
 
-      const refTextRaw = normalizeTextForDisplay(row.ref_text || '');
-      // Pick the closest-to-reference engine for the reference cell's
-      // diff: this is the OCR text the operator should compare the
-      // reference against. If no engine has text we fall back to
-      // showing the reference unchanged.
-      let bestEngineForRef = null;
-      let bestEngineDistance = Infinity;
-      ['google', 'azure', 'ocrspace'].forEach((engine) => {
-        const txt = normalizeTextForDisplay(aggregateEngineText(row, engine));
-        if (!txt) return;
-        const d = lcsDistance(txt, refTextRaw);
-        if (d < bestEngineDistance) { bestEngineDistance = d; bestEngineForRef = engine; }
-      });
-      const refBestText = bestEngineForRef
-        ? normalizeTextForDisplay(aggregateEngineText(row, bestEngineForRef))
-        : '';
+      const refDisplay = displayNormalize(row.ref_text || '');
+      const isPass = st === 'PASS';
+
+      // For MANUAL rows, find the engine whose OCR (display-normalized,
+      // lowercased) is closest to the reference — that's the engine
+      // we'll diff the reference cell against. For PASS rows we don't
+      // diff at all so the closest-engine pick doesn't matter.
+      let refDiffPair = '';
+      if (!isPass && refDisplay) {
+        let bestDistance = Infinity;
+        ['google', 'azure', 'ocrspace'].forEach((engine) => {
+          const txt = displayNormalize(aggregateEngineText(row, engine));
+          if (!txt) return;
+          const d = lcsDistance(txt.toLowerCase(), refDisplay.toLowerCase());
+          if (d < bestDistance) { bestDistance = d; refDiffPair = txt; }
+        });
+      }
 
       ['google', 'azure', 'ocrspace'].forEach((engine) => {
         const td = tr.querySelector(`td[data-engine="${engine}"]`);
-        const ocrText = normalizeTextForDisplay(aggregateEngineText(row, engine));
-        if (ocrText && refTextRaw) {
-          td.innerHTML = diffOcrVsRef(ocrText, refTextRaw).ocrHtml;
-        } else {
-          td.textContent = ocrText;
+        const ocrDisplay = displayNormalize(aggregateEngineText(row, engine));
+        if (!ocrDisplay) {
+          td.textContent = '';
+          return;
         }
-        td.insertAdjacentHTML('beforeend', renderConfidence(row, engine));
+        if (isPass || !refDisplay) {
+          // No diff on PASS — comparison already says these match
+          // modulo case / decoration / placeholders. Showing diff
+          // highlights would falsely flag character-level cosmetics.
+          td.textContent = ocrDisplay;
+        } else {
+          td.innerHTML = diffOcrVsRefCI(ocrDisplay, refDisplay).ocrHtml;
+        }
       });
 
       const referenceTd = tr.querySelector('td[data-engine="reference"]');
-      if (refTextRaw && refBestText) {
-        referenceTd.innerHTML = diffOcrVsRef(refBestText, refTextRaw).refHtml;
+      if (!refDisplay) {
+        referenceTd.textContent = '';
+      } else if (isPass || !refDiffPair) {
+        referenceTd.textContent = refDisplay;
       } else {
-        referenceTd.textContent = refTextRaw;
+        referenceTd.innerHTML = diffOcrVsRefCI(refDiffPair, refDisplay).refHtml;
       }
       tbody.appendChild(tr);
     });
