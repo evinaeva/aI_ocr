@@ -283,7 +283,10 @@ function renderTable(rows, engines) {
     // Zone column
     html += '<td class="zone-cell" title="' + esc(row.target_id || '') + '">' + esc(row.zone_name || '-') + '</td>';
 
-    // One OCR text column per engine
+    // One OCR text column per engine — char-level diff against
+    // the reference (red = chars only in OCR; chars only in ref are
+    // not drawn on the OCR side).
+    const refText = row.ref_text || '';
     engines.forEach(eng => {
       const engData = (row.ocr_results || {})[eng] || {};
       const text = engData.text || '';
@@ -291,7 +294,11 @@ function renderTable(rows, engines) {
       const isBest = row.best_engine === eng;
       html += '<td class="text-cell">';
       if (text) {
-        html += formatText(text);
+        if (refText) {
+          html += diffOcrVsRef(text, refText).ocrHtml;
+        } else {
+          html += formatText(text);
+        }
         if (conf) html += '<span class="conf-badge' + (isBest ? ' conf-best' : '') + '">' + conf + (isBest ? ' ★' : '') + '</span>';
       } else {
         html += '<span style="color:var(--muted)">\u2014</span>';
@@ -299,8 +306,15 @@ function renderTable(rows, engines) {
       html += '</td>';
     });
 
-    // Reference text column
-    html += '<td class="text-cell">' + formatText(row.ref_text || '') + '</td>';
+    // Reference text column — diff against the consensus / best
+    // engine OCR (yellow = chars in ref that the best engine missed).
+    const bestEng = row.best_engine || null;
+    const bestText = bestEng ? (((row.ocr_results || {})[bestEng] || {}).text || '') : '';
+    if (refText && bestText) {
+      html += '<td class="text-cell">' + diffOcrVsRef(bestText, refText).refHtml + '</td>';
+    } else {
+      html += '<td class="text-cell">' + formatText(refText) + '</td>';
+    }
 
     // Status column
     html += '<td>' +
@@ -350,6 +364,107 @@ async function handleDecision(e) {
     ? '<span class="decision-ok">\u2713 OK</span>'
     : '<span class="decision-err">\u2717 ERROR</span>';
   if (action === 'error') $btnDownload.style.display = '';
+}
+
+// Char-level diff (LCS) used to highlight OCR vs reference.
+// Output ops: {op: 'eq'|'del'|'add', char}
+//   'eq'  — char in both OCR and reference
+//   'del' — char in OCR only (red on the OCR side)
+//   'add' — char in reference only (yellow on the reference side)
+function charDiff(a, b) {
+  a = a || '';
+  b = b || '';
+  const m = a.length, n = b.length;
+  if (m === 0 && n === 0) return [];
+  if (m === 0) {
+    const out = new Array(n);
+    for (let k = 0; k < n; k++) out[k] = { op: 'add', char: b[k] };
+    return out;
+  }
+  if (n === 0) {
+    const out = new Array(m);
+    for (let k = 0; k < m; k++) out[k] = { op: 'del', char: a[k] };
+    return out;
+  }
+  const dp = new Array(m + 1);
+  for (let i = 0; i <= m; i++) dp[i] = new Int32Array(n + 1);
+  for (let i = 1; i <= m; i++) {
+    const ai = a[i - 1];
+    for (let j = 1; j <= n; j++) {
+      if (ai === b[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+      else dp[i][j] = dp[i - 1][j] >= dp[i][j - 1] ? dp[i - 1][j] : dp[i][j - 1];
+    }
+  }
+  const ops = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+      ops.push({ op: 'eq', char: a[i - 1] }); i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      ops.push({ op: 'add', char: b[j - 1] }); j--;
+    } else {
+      ops.push({ op: 'del', char: a[i - 1] }); i--;
+    }
+  }
+  return ops.reverse();
+}
+
+// Pre-clean for visual diff: collapse Windows newlines and trim trailing
+// spaces on each line so trailing-whitespace doesn't get a yellow/red bar.
+function diffPreClean(s) {
+  if (!s) return '';
+  return String(s)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\t ]+\n/g, '\n')
+    .replace(/[\t ]+$/g, '')
+    .replace(/^﻿/, '');
+}
+
+// Returns { ocrHtml, refHtml } — two HTML fragments with mismatching
+// characters wrapped in <span class="diff-del"> / <span class="diff-add">.
+// Each non-empty line is wrapped in <span class="text-line"> to match
+// the rest of the table's typography.
+function diffOcrVsRef(ocrText, refText) {
+  const a = diffPreClean(ocrText);
+  const b = diffPreClean(refText);
+  const ops = charDiff(a, b);
+
+  const ocrLines = [];
+  const refLines = [];
+  let curOcr = '';
+  let curRef = '';
+  const flushOcr = () => { ocrLines.push(curOcr); curOcr = ''; };
+  const flushRef = () => { refLines.push(curRef); curRef = ''; };
+
+  for (const op of ops) {
+    const c = op.char;
+    if (op.op === 'eq') {
+      if (c === '\n') { flushOcr(); flushRef(); continue; }
+      const e = esc(c);
+      curOcr += e;
+      curRef += e;
+    } else if (op.op === 'del') {
+      if (c === '\n') { flushOcr(); continue; }
+      curOcr += '<span class="diff-del">' + esc(c) + '</span>';
+    } else { // 'add'
+      if (c === '\n') { flushRef(); continue; }
+      curRef += '<span class="diff-add">' + esc(c) + '</span>';
+    }
+  }
+  flushOcr(); flushRef();
+
+  const wrap = (lines) => {
+    const out = [];
+    for (const l of lines) {
+      const stripped = l.replace(/<[^>]+>/g, '').replace(/\s+/g, '');
+      if (!stripped.length) continue;
+      out.push('<span class="text-line">' + l + '</span>');
+    }
+    if (!out.length) return '<span style="color:var(--muted)">—</span>';
+    return out.join('');
+  };
+
+  return { ocrHtml: wrap(ocrLines), refHtml: wrap(refLines) };
 }
 
 function formatText(text) {

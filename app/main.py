@@ -966,19 +966,57 @@ async def _process_session(
             return float(raw_conf) if isinstance(raw_conf, (int, float)) else None
 
         def _pick_best_text(results: Dict[str, object]) -> tuple[Optional[str], str, float]:
-            local_best_engine = None
-            local_best_text = ""
-            local_best_conf = -1.0
-            for eng, res in results.items():
-                conf = _res_conf(res)
-                text = _res_text(res)
-                conf_val = conf if conf is not None else -1.0
+            """Pick OCR text via majority consensus among engines that responded.
 
-                if conf_val > local_best_conf and text:
-                    local_best_conf = conf_val
-                    local_best_text = text
-                    local_best_engine = eng
-            return local_best_engine, local_best_text, local_best_conf
+            Engines that did not return any text (timeout, quota, network
+            failure) do not vote. If 2+ valid engines agree on the text
+            (after consensus-level normalization), the lex-smaller engine
+            name in the agreeing group wins. If only one engine returned
+            anything at all, that text is used (no cross-check possible).
+            Otherwise no winner is picked: text is empty and the caller
+            falls through to MANUAL.
+
+            Confidence is intentionally NOT used as a tie-breaker.
+            Only Google reports it among the configured engines, so
+            falling back to "highest confidence" systematically biased
+            disagreement cases to Google even when its OCR was wrong.
+            """
+            from app.pipeline.consensus import normalize_for_consensus
+
+            valid: list[tuple[str, str, float]] = []
+            for eng, res in results.items():
+                text = _res_text(res)
+                if not text:
+                    continue
+                conf = _res_conf(res)
+                conf_val = conf if conf is not None else -1.0
+                valid.append((eng, text, conf_val))
+
+            if not valid:
+                return None, "", -1.0
+            if len(valid) == 1:
+                eng, text, conf_val = valid[0]
+                return eng, text, conf_val
+
+            groups: Dict[str, list[tuple[str, str, float]]] = {}
+            for eng, text, conf_val in valid:
+                norm = normalize_for_consensus(text)
+                groups.setdefault(norm, []).append((eng, text, conf_val))
+
+            best_size = max(len(g) for g in groups.values())
+            if best_size < 2:
+                # Engines disagree — no consensus, no winner. Caller
+                # treats empty text as MANUAL.
+                return None, "", -1.0
+
+            majority_groups = [g for g in groups.values() if len(g) == best_size]
+            majority_groups.sort(
+                key=lambda g: normalize_for_consensus(g[0][1])
+            )
+            winning_group = majority_groups[0]
+            winning_group.sort(key=lambda x: x[0])  # lex by engine name
+            eng, text, conf_val = winning_group[0]
+            return eng, text, conf_val
 
         if en_source_image_name is not None:
             try:
