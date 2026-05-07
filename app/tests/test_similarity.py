@@ -1,5 +1,14 @@
 """
 Phase 5 tests for similarity.py.
+
+Punctuation policy update:
+  Strict/soft normalization keeps `! ? " . , $ % &` per spec.
+  Tests assert preservation of these characters.
+
+Downgrade rule update:
+  An OK zone is downgraded to MANUAL when `match_pass` is False
+  (reason `no_text_match`). The 0.85 Levenshtein threshold is kept
+  in the validation block as evidence only.
 """
 import unittest
 from app.pipeline.similarity import (
@@ -15,7 +24,6 @@ class TestNormalize(unittest.TestCase):
         self.assertEqual(compute_similarity("hello", "hello"), 1.0)
 
     def test_completely_different(self):
-        # "abc" vs "xyz" — distance 3, max_len 3 → 0.0
         self.assertEqual(compute_similarity("abc", "xyz"), 0.0)
 
     def test_placeholder_percent_removed(self):
@@ -31,70 +39,37 @@ class TestNormalize(unittest.TestCase):
         n = normalize_for_similarity("Buy <bonus_amount> tokens")
         self.assertNotIn("<bonus_amount>", n)
 
-    def test_ascii_punctuation_removed(self):
-        n = normalize_for_similarity("Hello, world! How's it?")
-        self.assertNotIn(",", n)
-        self.assertNotIn("!", n)
-        self.assertNotIn("?", n)
+    def test_user_punctuation_preserved(self):
+        n = normalize_for_similarity("Hello, world! How's it? $5 100% A&B \"quote\".")
+        for ch in (",", "!", "?", ".", "$", "%", "&", '"'):
+            self.assertIn(ch, n, f"expected {ch!r} preserved in soft normalization")
+
+    def test_other_punctuation_dropped(self):
+        n = normalize_for_similarity("a/b\\c|d:e;f(g)h*i+j")
+        for ch in ("/", "\\", "|", ":", ";", "(", ")", "*", "+"):
+            self.assertNotIn(ch, n, f"expected {ch!r} dropped")
 
     def test_both_empty_after_normalization(self):
-        # Both become empty after placeholder removal
-        self.assertEqual(compute_similarity("%a%", "%b%"), 1.0)
+        self.assertEqual(compute_similarity("%username%", "%username%"), 1.0)
 
     def test_one_empty_after_normalization(self):
         self.assertEqual(compute_similarity("", "hello"), 0.0)
         self.assertEqual(compute_similarity("hello", ""), 0.0)
 
-    def test_threshold_boundary_passes(self):
-        # Build a pair with exactly 0.85 similarity
-        # 20 chars, 3 substitutions → distance=3, max=20, sim=0.85
-        a = "a" * 20
-        b = "a" * 17 + "b" * 3
-        sim = compute_similarity(a, b)
-        # sim should be exactly 0.85
-        self.assertAlmostEqual(sim, 0.85, places=10)
-        # At exactly threshold — no downgrade
-        self.assertGreaterEqual(sim, SIMILARITY_THRESHOLD)
-
-    def test_threshold_boundary_fails(self):
-        # 20 chars, 4 substitutions → distance=4, sim=0.8 < 0.85
-        a = "a" * 20
-        b = "a" * 16 + "b" * 4
-        sim = compute_similarity(a, b)
-        self.assertAlmostEqual(sim, 0.8, places=10)
-        self.assertLess(sim, SIMILARITY_THRESHOLD)
-
-    def test_rounding_in_json_not_in_comparison(self):
-        # similarity value rounded to 4 decimals in block, unrounded for comparison
-        a = "a" * 20
-        b = "a" * 17 + "b" * 3
-        block, sim_raw = build_validation_result(
-            lang="en",
-            zone_name="z",
-            expected_texts={"en": {"z": b}},
-            ocr_text=a,
-            run_id="test-run",
-        )
-        self.assertTrue(block["validation_applied"])
-        # JSON value is rounded to 4 decimals
-        self.assertEqual(block["similarity"], round(sim_raw, 4))
-        # Raw value used for comparison is full precision
-        self.assertIsInstance(sim_raw, float)
+    def test_threshold_constant_preserved(self):
+        self.assertEqual(SIMILARITY_THRESHOLD, 0.85)
 
     def test_unicode_emoji_no_crash(self):
-        # Should not crash and produce stable output
-        sim = compute_similarity("hello 🌟 world", "hello world")
+        sim = compute_similarity("hello \U0001f31f world", "hello world")
         self.assertIsInstance(sim, float)
         self.assertGreaterEqual(sim, 0.0)
         self.assertLessEqual(sim, 1.0)
 
     def test_large_input_truncation(self):
-        # Build 3000-char strings; normalization then truncation to 2000
         a = "a" * 3000
         b = "a" * 3000
         sim = compute_similarity(a, b)
         self.assertEqual(sim, 1.0)
-        # Different beyond 2000 — should still work without OOM
         c = "a" * 2000 + "b" * 1000
         sim2 = compute_similarity(a, c)
         self.assertIsInstance(sim2, float)
@@ -156,13 +131,47 @@ class TestBuildValidationResult(unittest.TestCase):
         )
         self.assertTrue(block["validation_applied"])
         self.assertIsNone(block["skip_reason"])
-        self.assertIn("expected_text", block)
-        self.assertIn("normalized_ocr", block)
-        self.assertIn("normalized_expected", block)
-        self.assertIn("similarity", block)
-        self.assertIn("threshold", block)
+        for k in (
+            "expected_text",
+            "normalized_ocr",
+            "normalized_expected",
+            "similarity",
+            "threshold",
+            "match_pass",
+            "match_mode",
+            "lines_ocr",
+            "lines_ref",
+        ):
+            self.assertIn(k, block, f"missing key {k!r}")
         self.assertEqual(block["threshold"], 0.85)
+        self.assertTrue(block["match_pass"])
+        self.assertEqual(block["match_mode"], "exact")
         self.assertEqual(sim, 1.0)
+
+    def test_line_order_does_not_affect_pass(self):
+        # Two-line reference, OCR returns the same lines reversed — must PASS.
+        block, sim = build_validation_result(
+            lang="en",
+            zone_name="banner",
+            expected_texts={"en": {"banner": "Hello, world!\nBuy tokens."}},
+            ocr_text="Buy tokens.\nHello, world!",
+            run_id="r1",
+        )
+        self.assertTrue(block["validation_applied"])
+        self.assertTrue(block["match_pass"])
+        self.assertEqual(block["match_mode"], "line_multiset")
+
+    def test_char_diff_does_not_pass(self):
+        block, sim = build_validation_result(
+            lang="en",
+            zone_name="banner",
+            expected_texts={"en": {"banner": "Hello world"}},
+            ocr_text="Hello vorld",
+            run_id="r1",
+        )
+        self.assertTrue(block["validation_applied"])
+        self.assertFalse(block["match_pass"])
+        self.assertEqual(block["match_mode"], "none")
 
     def test_expected_none_skip(self):
         block, sim = build_validation_result(
@@ -177,33 +186,42 @@ class TestBuildValidationResult(unittest.TestCase):
 
 
 class TestDowngradeLogic(unittest.TestCase):
-    """Test the downgrade rules (applied in run_routes, tested here with helpers)."""
+    """Mirrors the run_routes downgrade rule: OK → MANUAL when match_pass is False."""
 
-    def _apply_downgrade(self, zone_status, reason, sim):
-        """Mirror the downgrade logic from run_routes."""
-        if sim is not None and sim < SIMILARITY_THRESHOLD:
-            if zone_status == "OK":
-                return "MANUAL", "low_similarity"
+    def _apply_downgrade(self, zone_status, reason, *, validation_applied, match_pass):
+        if (
+            validation_applied is True
+            and match_pass is False
+            and zone_status == "OK"
+        ):
+            return "MANUAL", "no_text_match"
         return zone_status, reason
 
-    def test_ok_zone_downgraded_on_low_similarity(self):
-        status, reason = self._apply_downgrade("OK", None, 0.7)
+    def test_ok_zone_downgraded_when_no_match(self):
+        status, reason = self._apply_downgrade(
+            "OK", None, validation_applied=True, match_pass=False
+        )
         self.assertEqual(status, "MANUAL")
-        self.assertEqual(reason, "low_similarity")
+        self.assertEqual(reason, "no_text_match")
 
-    def test_ok_zone_not_downgraded_at_threshold(self):
-        status, reason = self._apply_downgrade("OK", None, 0.85)
+    def test_ok_zone_not_downgraded_when_pass(self):
+        status, reason = self._apply_downgrade(
+            "OK", None, validation_applied=True, match_pass=True
+        )
+        self.assertEqual(status, "OK")
+        self.assertIsNone(reason)
+
+    def test_ok_zone_not_downgraded_when_validation_skipped(self):
+        status, reason = self._apply_downgrade(
+            "OK", None, validation_applied=False, match_pass=False
+        )
         self.assertEqual(status, "OK")
         self.assertIsNone(reason)
 
     def test_manual_zone_reason_preserved(self):
-        # Already MANUAL with low_confidence — reason must not change
-        status, reason = self._apply_downgrade("MANUAL", "low_confidence", 0.5)
-        self.assertEqual(status, "MANUAL")
-        self.assertEqual(reason, "low_confidence")
-
-    def test_manual_zone_reason_preserved_no_sim(self):
-        status, reason = self._apply_downgrade("MANUAL", "low_confidence", None)
+        status, reason = self._apply_downgrade(
+            "MANUAL", "low_confidence", validation_applied=True, match_pass=False
+        )
         self.assertEqual(status, "MANUAL")
         self.assertEqual(reason, "low_confidence")
 

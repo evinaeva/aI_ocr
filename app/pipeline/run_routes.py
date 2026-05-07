@@ -24,6 +24,12 @@ Logo-GCS (additive):
   OCR engines are never invoked for logo zones.
   _logo_template_match is kept as a thin backward-compat shim that delegates
   to logo_matcher.
+
+PASS / MANUAL decision (Phase 5):
+  An OK zone is downgraded to MANUAL with reason `no_text_match`
+  whenever the validation block reports `match_pass == False`. The PASS
+  primitive is line-order-insensitive but character-strict within each
+  line; see app.normalizer.compare_lines for the exact contract.
 """
 from __future__ import annotations
 
@@ -117,20 +123,7 @@ def _guard_png_size(payload: bytes) -> bytes:
 
 
 def _logo_template_match(zone_bytes: bytes, zone: ZoneDef) -> dict:
-    """
-    Backward-compat shim: delegates to logo_matcher.match_logo_zone().
-
-    Run OpenCV template matching for logo zones. Supports a list of base64-encoded
-    logo templates via logo_templates_base64 in zone.engine_config. A single
-    backward-compatible key logo_template_base64 is also honored. Templates stored
-    in GCS are loaded via logo_gcs_set_key (or the "default" set when the
-    LOGO_TEMPLATES_GCS_BUCKET env var is set).
-
-    For each template, multi-scale TM_CCOEFF_NORMED matching in grayscale is used.
-    The highest score across all (template x scale) combinations is compared against
-    a configurable threshold (default 0.7 from LOGO_MATCH_THRESHOLD env var).
-    score >= threshold -> OK, else -> MANUAL. OCR engines are never invoked.
-    """
+    """Backward-compat shim: delegates to logo_matcher.match_logo_zone()."""
     return match_logo_zone(zone_bytes, zone.engine_config or {})
 
 
@@ -139,17 +132,7 @@ def _prefetch_google_batch(
     zones: list,
     source_size: list,
 ) -> dict:
-    """
-    Crop images for all zones that include 'google' in their engines.
-    Calls google_batch_annotate_images in chunks of 16.
-    Injects results into the OCR module cache via _google_cache_put.
-
-    Returns a dict {zone_index: CroppedImage} for zones that were batched,
-    so run_routes can pass the SAME bytes object to dispatch_zone_ocr
-    (object-identity match required for cache lookup).
-
-    Never raises.
-    """
+    """Batched Google OCR prefetch (see module docstring)."""
     google_jobs_by_mode = {}
 
     for i, zone in enumerate(zones):
@@ -202,11 +185,15 @@ async def run_template(
     lang: str = Query(default=""),
 ):
     """
-    Run per-zone OCR + consensus + similarity validation for all zones.
+    Run per-zone OCR + consensus + line-order-insensitive PASS validation.
 
-    Phase 5 (additive): adds a `validation` block to every zone in the response.
-    Phase 6 (additive): persists run to Firestore synchronously; adds
-      persisted / persistence_error / persistence_error_type to response.
+    Phase 5: adds a `validation` block to every zone in the response.
+    An OK zone is downgraded to MANUAL when `match_pass` is False
+    (reason `no_text_match`); Levenshtein similarity is kept in the
+    validation block as evidence and does not gate PASS.
+
+    Phase 6: persists run to Firestore synchronously; adds
+      persisted / persistence_error / persistence_error_type to the response.
       These three keys are ALWAYS present, even when persistence is disabled.
     """
     run_id = str(uuid.uuid4())
@@ -228,7 +215,6 @@ async def run_template(
             lang=effective_lang or None,
         )
 
-        # Google-batch-v2 prefetch
         batched_zone_bytes = await asyncio.to_thread(
             _prefetch_google_batch,
             image_bytes,
@@ -241,7 +227,6 @@ async def run_template(
         for i, zone in enumerate(tmpl.zones):
             engines_configured = len(zone.engines) > 0
 
-            # Logo zones have no OCR engines by design; skip the no-engines guard.
             if not engines_configured and zone.type != "logo":
                 consensus = resolve_consensus(
                     engine_results=[],
@@ -273,7 +258,6 @@ async def run_template(
                 )
                 continue
 
-            # Use same bytes object if it was batched (logo zones are not batched).
             if i in batched_zone_bytes:
                 cropped_image = batched_zone_bytes[i]
             else:
@@ -283,7 +267,6 @@ async def run_template(
                     cropped_image = None
 
             if zone.type == "logo":
-                # Logo branch: OpenCV only, OCR dispatcher is never called.
                 engine_results = []
                 logo_bytes = cropped_image.bytes if cropped_image is not None else b""
                 consensus = _logo_template_match(logo_bytes, zone)
@@ -339,7 +322,7 @@ async def run_template(
 
             selected_text = consensus.get("selected_text") or ""
 
-            validation_block, sim_raw = build_validation_result(
+            validation_block, _sim = build_validation_result(
                 lang=effective_lang,
                 zone_name=zone.name,
                 expected_texts=getattr(tmpl, "expected_texts", None),
@@ -347,15 +330,16 @@ async def run_template(
                 run_id=run_id,
             )
 
-            # Low-similarity downgrade applies only to OCR zones, not logo zones.
+            # PASS / MANUAL: downgrade only when validation actually ran.
+            # Logo zones don't go through expected-text validation.
             if (
-                sim_raw is not None
-                and sim_raw < SIMILARITY_THRESHOLD
+                validation_block.get("validation_applied") is True
+                and validation_block.get("match_pass") is False
                 and consensus.get("zone_status") == "OK"
                 and zone.type != "logo"
             ):
                 consensus["zone_status"] = "MANUAL"
-                consensus["reason"] = "low_similarity"
+                consensus["reason"] = "no_text_match"
 
             log_event(
                 "zone_result",
