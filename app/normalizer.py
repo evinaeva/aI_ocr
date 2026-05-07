@@ -60,13 +60,14 @@ _ALL_PCT    = re.compile(r"%[^%]+%")
 _BRAND_REMOVE_RE = re.compile(r"\bbongacams\b", re.IGNORECASE)
 
 # ── Punctuation policy ────────────────────────────────────────
-# strict/soft keep `! ? " . , $ % &` plus `< > [ ]`. Brackets are kept
-# because they routinely carry meaning in marketing copy — a reference
-# `[ HESAB YARADIN ]` should NOT silently match a bracket-less OCR
-# output. Whitelist placeholders (e.g. `<displayname>`, `[username]`)
-# are matched and removed BEFORE this strip runs at `soft` level, so
-# they still vanish correctly.
-_STRIP_STRICT_RE = re.compile(r'[^\w\s!?".,$%&<>\[\]]', re.UNICODE)
+# strict/soft keep `! ? " . , $ % &`. The decoration brackets `< > [ ]`
+# are stripped because in marketing copy they're layout noise around
+# the actual phrase (e.g. `[ HESAB YARADIN ]`) — the OCR will never
+# capture them, and we don't want operators to chase phantom
+# differences. Whitelist placeholders (`<displayname>`, `[username]`,
+# `%bonus_amount%`) are matched and removed BEFORE this strip runs at
+# `soft` level, so they still vanish correctly.
+_STRIP_STRICT_RE = re.compile(r'[^\w\s!?".,$%&]', re.UNICODE)
 
 # consensus: byte-equivalent to old normalize_for_consensus.
 # Strips this fixed ASCII set; preserves backtick, %, <, >, [, ].
