@@ -1,123 +1,62 @@
 """
-Phase 5: Similarity computation for expected-text validation.
+Phase 5: Expected-text validation.
 
-All logic is self-contained; do NOT import from normalizer.py.
+Decision rule:
+  PASS if compare_lines(ocr, expected, level="soft") returns pass=True.
+  Line order does not matter; characters within each line must match
+  exactly after `soft`-level normalization.
+
+Levenshtein similarity is computed for evidence/UI only and does not
+decide PASS.
 """
 from __future__ import annotations
 
-import re
+from app.normalizer import (
+    normalize,
+    compare_lines,
+    _levenshtein_similarity,
+)
 
+# Kept for backward compatibility with consumers that still reference it.
 SIMILARITY_THRESHOLD = 0.85
-
-# Exact punctuation set from spec
-_PUNCT_RE = re.compile(r'[!"#$&\'()*+,./:;=?@^_\{\|\}~\-]')
-
-# Placeholder patterns
-_PLACEHOLDER_RES = [
-    re.compile(r'%[A-Za-z0-9_]+%'),
-    re.compile(r'\[[A-Za-z0-9_]+\]'),
-    re.compile(r'<[A-Za-z0-9_ ]+>'),
-]
 
 
 def normalize_for_similarity(text: str) -> str:
-    """Normalize text for similarity comparison per Phase 5 spec."""
-    if text is None:
-        text = ""
-    # 1. Lowercase
-    text = text.lower()
-    # 2. Collapse whitespace (Python \s+ covers Unicode whitespace)
-    text = re.sub(r'\s+', ' ', text)
-    # 3. Remove ASCII punctuation
-    text = _PUNCT_RE.sub('', text)
-    # 4. Remove placeholders
-    for pat in _PLACEHOLDER_RES:
-        text = pat.sub('', text)
-    # 5. Strip
-    return text.strip()
-
-
-def _levenshtein_distance(a: str, b: str) -> int:
-    """Rolling 2-row DP, O(min(n,m)) memory."""
-    if len(a) < len(b):
-        a, b = b, a
-    # a is now the longer string
-    n, m = len(a), len(b)
-    prev = list(range(m + 1))
-    curr = [0] * (m + 1)
-    for i in range(1, n + 1):
-        curr[0] = i
-        for j in range(1, m + 1):
-            cost = 0 if a[i - 1] == b[j - 1] else 1
-            curr[j] = min(
-                prev[j] + 1,
-                curr[j - 1] + 1,
-                prev[j - 1] + cost,
-            )
-        prev, curr = curr, prev
-    return prev[m]
+    """Backward-compatible alias — use `normalize(text, "soft")` directly."""
+    return normalize(text or "", "soft")
 
 
 def compute_similarity(ocr_text: str, expected_text: str) -> float:
-    """Compute Levenshtein similarity in [0.0, 1.0]."""
-    ocr_norm = normalize_for_similarity(ocr_text)
-    exp_norm = normalize_for_similarity(expected_text)
-
-    # Truncate after normalization
-    ocr_norm = ocr_norm[:2000]
-    exp_norm = exp_norm[:2000]
-
-    # Special cases
-    if ocr_norm == '' and exp_norm == '':
-        return 1.0
-    if ocr_norm == '' or exp_norm == '':
-        return 0.0
-
-    distance = _levenshtein_distance(ocr_norm, exp_norm)
-    max_len = max(len(ocr_norm), len(exp_norm))
-    return 1.0 - (distance / max_len)
-
-
-def build_validation_block(
-    lang: str | None,
-    zone_name: str,
-    expected_texts: dict | None,
-    ocr_text: str,
-    run_id: str,
-) -> dict:
-    """
-    Build the validation block for a zone.
-    Always returns a dict with validation_applied key.
-    May update zone_status/reason via returned side-channel.
-    Returns (validation_block, new_status_override, new_reason_override)
-    — caller applies status changes only when zone_status was 'OK'.
-    """
-    # This function only builds the block; caller handles status.
-    # Kept separate for testability.
-    raise NotImplementedError("Use build_validation_result instead")
+    """Levenshtein similarity in [0.0, 1.0] on `soft`-normalized strings."""
+    ocr_norm = normalize(ocr_text or "", "soft")
+    exp_norm = normalize(expected_text or "", "soft")
+    return _levenshtein_similarity(ocr_norm, exp_norm)
 
 
 def build_validation_result(
-    lang: str | None,
-    zone_name: str,
+    lang,
+    zone_name,
     expected_texts,
-    ocr_text: str,
-    run_id: str,
-) -> tuple[dict, float | None]:
-    """
-    Returns (validation_block, similarity_float_or_None).
-    similarity is unrounded float (for status decision); None if not computed.
+    ocr_text,
+    run_id,
+):
+    """Returns (validation_block, sim_or_None).
+
+    The returned block always contains `validation_applied`. When validation
+    is applied it also contains:
+      - expected_text, normalized_ocr, normalized_expected
+      - similarity (rounded), threshold (legacy 0.85, evidence only)
+      - match_pass (bool), match_mode ("exact" | "line_multiset" | "none")
+      - lines_ocr, lines_ref
     """
     from app.logging_utils import log_event
 
-    # --- Skip: lang missing ---
     if not lang:
         return {
             "validation_applied": False,
             "skip_reason": "lang_missing",
         }, None
 
-    # --- Skip: expected not available ---
     if (
         not expected_texts
         or not isinstance(expected_texts, dict)
@@ -132,11 +71,11 @@ def build_validation_result(
 
     expected_text = expected_texts[lang][zone_name]
 
-    # --- Compute similarity ---
     try:
-        sim = compute_similarity(ocr_text or "", expected_text)
-        ocr_norm = normalize_for_similarity(ocr_text or "")[:2000]
-        exp_norm = normalize_for_similarity(expected_text)[:2000]
+        cmp = compare_lines(ocr_text or "", expected_text, level="soft")
+        ocr_norm = normalize(ocr_text or "", "soft")[:2000]
+        exp_norm = normalize(expected_text, "soft")[:2000]
+        sim = float(cmp["similarity"])
         return {
             "validation_applied": True,
             "skip_reason": None,
@@ -145,6 +84,10 @@ def build_validation_result(
             "normalized_expected": exp_norm,
             "similarity": round(sim, 4),
             "threshold": SIMILARITY_THRESHOLD,
+            "match_pass": bool(cmp["pass"]),
+            "match_mode": cmp["mode"],
+            "lines_ocr": cmp["lines_ocr"],
+            "lines_ref": cmp["lines_ref"],
         }, sim
     except Exception:
         log_event(

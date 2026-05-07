@@ -1,10 +1,41 @@
 """
-Text normalization for OCR vs reference comparison.
+Text normalization and comparison for OCR vs reference text.
+
+Single source of truth used by:
+  - Phase 4 consensus  (level="consensus")
+  - Phase 5 similarity (level="soft")
+  - section_matcher    (level="strict" / "soft")
+
+Three normalization levels:
+  - "strict"    — full unicode cleanup, lowercase, keeps `! ? " . , $ % &`
+                  and placeholder syntax `< > [ ]`. Everything else outside
+                  word characters and whitespace is replaced by space.
+                  No placeholder removal.
+  - "soft"      — same as strict, but whitelisted placeholder tokens
+                  (e.g. %displayname%, [username], <skin>) are removed.
+                  CTA markup like <BUY TOKENS> stays intact.
+  - "consensus" — minimal cleanup for engine-vs-engine matching;
+                  byte-equivalent to the previous Phase 4 implementation.
+                  Lowercase + collapse whitespace + strip a fixed set of
+                  ASCII punctuation, preserving backtick, %, <, >, [, ].
+
+`compare_lines(ocr, ref, level)` is the canonical PASS/MANUAL primitive.
+PASS if either:
+  (a) the joined normalized strings are equal (line order preserved), or
+  (b) the multiset of non-empty normalized lines is equal
+      (line order does NOT matter; each line still has to match
+       exactly character-by-character after normalization).
+Otherwise the comparison fails and the caller emits MANUAL.
+
+Levenshtein similarity is returned for evidence/UI; it does NOT decide PASS.
 """
+from __future__ import annotations
+
 import re
 import unicodedata
+from typing import List
 
-# ── Placeholder whitelist ────────────────────────────────────────────────────
+# ── Placeholder whitelist ───────────────────────────────────────
 # Only these known variable names are treated as placeholders.
 # CTA text like <BUY TOKENS> or <PLAY NOW> is NOT a placeholder.
 _PLACEHOLDER_NAMES = frozenset({
@@ -20,12 +51,17 @@ _PLACEHOLDER_NAMES = frozenset({
 _PH_PCT     = re.compile(r"%([^%]+)%")
 _PH_BRACKET = re.compile(r"\[([^\]]+)\]")
 _PH_ANGLE   = re.compile(r"<([^>]+)>")
+_ALL_PCT    = re.compile(r"%[^%]+%")
 
-# For display: only remove constructs that are actual whitelisted placeholders
-_ALL_PCT     = re.compile(r"%[^%]+%")
-
-# Brand names to remove from OCR text
 _BRAND_REMOVE_RE = re.compile(r"\bbongacams\b", re.IGNORECASE)
+
+# ── Punctuation policy ────────────────────────────────────────
+# strict/soft: keep `! ? " . , $ % &` and placeholder syntax `< > [ ]`.
+_STRIP_STRICT_RE = re.compile(r'[^\w\s!?".,$%&<>\[\]]', re.UNICODE)
+
+# consensus: byte-equivalent to old normalize_for_consensus.
+# Strips this fixed ASCII set; preserves backtick, %, <, >, [, ].
+_CONSENSUS_PUNCT_RE = re.compile(r'[!"#$&\'()*+,./:;=?@^_{}|~\-]')
 
 
 def _is_placeholder_name(name: str) -> bool:
@@ -47,11 +83,6 @@ def _remove_placeholders(text: str) -> str:
 
 
 def _remove_placeholders_for_display(text: str) -> str:
-    """
-    For display: remove whitelisted %placeholder%, [placeholder], <placeholder> constructs.
-    NON-whitelisted angle/bracket constructs (e.g. <BUY TOKENS>, <PLAY NOW>) are KEPT
-    so CTA text is visible in the Reference text column.
-    """
     text = _PH_PCT.sub(
         lambda m: " " if _is_placeholder_name(m.group(1)) else m.group(0), text
     )
@@ -61,7 +92,6 @@ def _remove_placeholders_for_display(text: str) -> str:
     text = _PH_ANGLE.sub(
         lambda m: " " if _is_placeholder_name(m.group(1)) else m.group(0), text
     )
-    # Also remove bare %...% (non-whitelisted %vars% still look ugly)
     text = _ALL_PCT.sub(" ", text)
     return text
 
@@ -73,23 +103,23 @@ def _collapse_whitespace(text: str) -> str:
 def _pre_clean(text: str) -> str:
     """Remove emoji, arrows/bullets, BiDi marks; normalise dashes/spaces/quotes."""
     text = re.sub(
-        "[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U00002B00-\U00002BFF\uFE00-\uFE0F]",
+        "[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U00002B00-\U00002BFF︀-️]",
         "", text,
     )
     text = re.sub(
-        r"[\u25B0-\u25FF\u27A0-\u27BF\u2190-\u21FF\u2022\u00B7]",
+        r"[▰-◿➠-➿←-⇿•·]",
         "", text,
     )
-    text = re.sub(r"[\u200E\u200F\u202A\u202B\u202C\u202D\u202E]", "", text)
-    text = re.sub(r"[\xa0\u202f\u2009\u2007\u2008\u200a\u3000\u1680\u180e]", " ", text)
-    text = re.sub(r"[\u2013\u2014\u2015\u2012\u2011]", "-", text)
-    text = text.replace("\u201c", '"').replace("\u201d", '"')
-    text = text.replace("\u2018", "'").replace("\u2019", "'")
-    text = text.replace("\u00ab", '"').replace("\u00bb", '"')
-    text = text.replace("\u2039", "'").replace("\u203a", "'")
-    text = text.replace("\u00ad", "")
-    text = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", text)
-    text = text.replace("\u2026", "...")
+    text = re.sub(r"[‎‏‪‫‬‭‮]", "", text)
+    text = re.sub(r"[\xa0     　 ᠎]", " ", text)
+    text = re.sub(r"[–—―‒‑]", "-", text)
+    text = text.replace("“", '"').replace("”", '"')
+    text = text.replace("‘", "'").replace("’", "'")
+    text = text.replace("«", '"').replace("»", '"')
+    text = text.replace("‹", "'").replace("›", "'")
+    text = text.replace("­", "")
+    text = re.sub(r"[​‌‍﻿]", "", text)
+    text = text.replace("…", "...")
     return text
 
 
@@ -97,41 +127,66 @@ def remove_brand_names(text: str) -> str:
     return _BRAND_REMOVE_RE.sub("", text)
 
 
-def normalize_strict(text: str) -> str:
-    """Normalize for strict comparison (case-insensitive, no punctuation)."""
+def normalize(text: str, level: str = "strict") -> str:
+    """Canonical character-level normalization at one of three levels.
+
+    Returns "" for empty/None input. See module docstring for level semantics.
+    """
     if not text:
         return ""
-    text = unicodedata.normalize("NFC", text)
-    text = _pre_clean(text)
-    text = remove_brand_names(text)
-    text = text.lower()
-    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-    text = _collapse_whitespace(text)
-    return text
+
+    if level == "consensus":
+        t = text.lower()
+        t = re.sub(r"\s+", " ", t)
+        t = _CONSENSUS_PUNCT_RE.sub("", t)
+        return t.strip()
+
+    if level not in ("strict", "soft"):
+        raise ValueError(f"unknown normalization level: {level!r}")
+
+    t = unicodedata.normalize("NFC", text)
+    t = _pre_clean(t)
+    t = remove_brand_names(t)
+    t = t.lower()
+    if level == "soft":
+        t = _remove_placeholders(t)
+    t = _STRIP_STRICT_RE.sub(" ", t)
+    return _collapse_whitespace(t)
+
+
+# ── Backward-compatible aliases ─────────────────────────────────
+
+def normalize_strict(text: str) -> str:
+    return normalize(text, "strict")
 
 
 def normalize_soft(text: str) -> str:
-    """Same as normalize_strict but also removes whitelisted placeholder tokens."""
+    return normalize(text, "soft")
+
+
+def has_placeholder(text: str) -> bool:
+    """Return True if text contains at least one whitelisted placeholder token."""
     if not text:
-        return ""
-    text = unicodedata.normalize("NFC", text)
-    text = _pre_clean(text)
-    text = remove_brand_names(text)
-    text = text.lower()
-    text = _remove_placeholders(text)
-    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
-    text = _collapse_whitespace(text)
-    return text
+        return False
+    for m in _PH_PCT.finditer(text):
+        if _is_placeholder_name(m.group(1)):
+            return True
+    for m in _PH_BRACKET.finditer(text):
+        if _is_placeholder_name(m.group(1)):
+            return True
+    for m in _PH_ANGLE.finditer(text):
+        if _is_placeholder_name(m.group(1)):
+            return True
+    return False
 
 
 def clean_for_display(text: str) -> str:
-    """
-    Clean text for UI display.
-    - Removes emoji, arrows, bullets, BiDi marks
-    - Removes brand names
-    - Removes only WHITELISTED placeholder tokens (e.g. %displayname%)
-    - PRESERVES CTA text like <BUY TOKENS>, <PLAY NOW>, [here] when not whitelisted
-    - Collapses extra blank lines
+    """Clean text for UI display.
+
+    - Removes emoji, arrows, bullets, BiDi marks, brand names.
+    - Removes only whitelisted placeholder tokens.
+    - Preserves CTA text like <BUY TOKENS>, <PLAY NOW>, [here].
+    - Collapses extra blank lines.
     """
     if not text:
         return ""
@@ -144,15 +199,106 @@ def clean_for_display(text: str) -> str:
     return text.strip()
 
 
-def has_placeholder(text: str) -> bool:
-    """Return True if text contains at least one whitelisted placeholder token."""
-    for m in _PH_PCT.finditer(text):
-        if _is_placeholder_name(m.group(1)):
-            return True
-    for m in _PH_BRACKET.finditer(text):
-        if _is_placeholder_name(m.group(1)):
-            return True
-    for m in _PH_ANGLE.finditer(text):
-        if _is_placeholder_name(m.group(1)):
-            return True
-    return False
+# ── Line-aware PASS comparator ─────────────────────────────────
+
+_LINE_SPLIT_RE = re.compile(r"[\r\n]+")
+
+
+def _normalize_lines(text: str, level: str) -> List[str]:
+    if not text:
+        return []
+    out: List[str] = []
+    for chunk in _LINE_SPLIT_RE.split(text):
+        n = normalize(chunk, level)
+        if n:
+            out.append(n)
+    return out
+
+
+def compare_lines(ocr: str, ref: str, level: str = "soft") -> dict:
+    """PASS/MANUAL primitive.
+
+    Returns dict with keys:
+      pass:        bool
+      mode:        "exact" | "line_multiset" | "none"
+      similarity:  Levenshtein similarity on joined-normalized strings
+      lines_ocr:   number of non-empty normalized OCR lines
+      lines_ref:   number of non-empty normalized reference lines
+    """
+    full_ocr = normalize(ocr or "", level)
+    full_ref = normalize(ref or "", level)
+
+    sim = _levenshtein_similarity(full_ocr[:2000], full_ref[:2000])
+
+    ocr_lines = _normalize_lines(ocr or "", level)
+    ref_lines = _normalize_lines(ref or "", level)
+
+    if not full_ocr and not full_ref:
+        return {
+            "pass": True,
+            "mode": "exact",
+            "similarity": 1.0,
+            "lines_ocr": len(ocr_lines),
+            "lines_ref": len(ref_lines),
+        }
+
+    if full_ocr == full_ref:
+        return {
+            "pass": True,
+            "mode": "exact",
+            "similarity": sim,
+            "lines_ocr": len(ocr_lines),
+            "lines_ref": len(ref_lines),
+        }
+
+    if ocr_lines and sorted(ocr_lines) == sorted(ref_lines):
+        return {
+            "pass": True,
+            "mode": "line_multiset",
+            "similarity": sim,
+            "lines_ocr": len(ocr_lines),
+            "lines_ref": len(ref_lines),
+        }
+
+    return {
+        "pass": False,
+        "mode": "none",
+        "similarity": sim,
+        "lines_ocr": len(ocr_lines),
+        "lines_ref": len(ref_lines),
+    }
+
+
+# ── Levenshtein (evidence only; PASS does not depend on it) ──────────────
+
+def _levenshtein_distance(a: str, b: str) -> int:
+    if len(a) < len(b):
+        a, b = b, a
+    n, m = len(a), len(b)
+    if m == 0:
+        return n
+    prev = list(range(m + 1))
+    curr = [0] * (m + 1)
+    for i in range(1, n + 1):
+        curr[0] = i
+        for j in range(1, m + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            curr[j] = min(
+                prev[j] + 1,
+                curr[j - 1] + 1,
+                prev[j - 1] + cost,
+            )
+        prev, curr = curr, prev
+    return prev[m]
+
+
+def _levenshtein_similarity(a: str, b: str) -> float:
+    a = (a or "")[:2000]
+    b = (b or "")[:2000]
+    if a == "" and b == "":
+        return 1.0
+    if a == "" or b == "":
+        return 0.0
+    distance = _levenshtein_distance(a, b)
+    max_len = max(len(a), len(b))
+    return 1.0 - (distance / max_len)
