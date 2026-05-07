@@ -1,21 +1,4 @@
 {
-  "indexes": [
-    {
-      "collectionGroup": "template_runs",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "template_name", "order": "ASCENDING" },
-        { "fieldPath": "created_at",    "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "template_run_zones",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "run_id",     "order": "ASCENDING" },
-        { "fieldPath": "zone_index", "order": "ASCENDING" }
-      ]
-    }
-  ],
+  "indexes": [],
   "fieldOverrides": []
 }

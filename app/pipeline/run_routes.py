@@ -1,14 +1,10 @@
 """
-Phase 4 + Phase 5 + Phase 6: Run routes.
+Phase 4 + Phase 5: Run routes.
 
 POST /api/templates/{template_name}/run?lang=<bcp47_or_project_lang_code>
   - Accepts: multipart/form-data with image file
-  - Returns: JSON run result with additive validation block per zone
-
-Phase 6 additions (additive):
-  - Synchronous persistence to Firestore before returning response (§3)
-  - Response always includes: persisted, persistence_error, persistence_error_type (§4)
-  - Persistence failure → HTTP 200 with persisted=False (§5)
+  - Returns: JSON run result with one zone-result entry per template zone,
+             including consensus and the Phase 5 validation block.
 
 A2 fix: dispatch_zone_ocr is a sync function; called via asyncio.to_thread
   to avoid blocking the event loop.
@@ -30,11 +26,15 @@ PASS / MANUAL decision (Phase 5):
   whenever the validation block reports `match_pass == False`. The PASS
   primitive is line-order-insensitive but character-strict within each
   line; see app.normalizer.compare_lines for the exact contract.
+
+No persistence:
+  Run results are not written to Firestore. The response is the only
+  consumer; once the operator has reviewed PASS/MANUAL the data is
+  intentionally discarded.
 """
 from __future__ import annotations
 
 import asyncio
-import base64
 import io
 import logging
 import os
@@ -43,8 +43,6 @@ import uuid
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
-import cv2
-import numpy as np
 
 from app.logging_utils import log_event
 from app.pipeline import template_store
@@ -52,9 +50,7 @@ from app.pipeline.models import ZoneDef
 from app.pipeline.ocr_dispatcher import dispatch_zone_ocr
 from app.pipeline.ocr_dispatcher import ZoneEngineResult
 from app.pipeline.consensus import resolve_consensus
-from app.pipeline.similarity import build_validation_result, SIMILARITY_THRESHOLD
-from app.pipeline.firestore_store import is_persistence_enabled
-from app.pipeline.persistence import persist_run
+from app.pipeline.similarity import build_validation_result
 from app.pipeline.logo_matcher import match_logo_zone
 from app.pipeline.cropped_image import CroppedImage
 from app.pipeline.preprocessor import load_image, make_cropped_image, maybe_upscale, scale_bbox, crop_zone_to_png
@@ -187,14 +183,9 @@ async def run_template(
     """
     Run per-zone OCR + consensus + line-order-insensitive PASS validation.
 
-    Phase 5: adds a `validation` block to every zone in the response.
-    An OK zone is downgraded to MANUAL when `match_pass` is False
-    (reason `no_text_match`); Levenshtein similarity is kept in the
-    validation block as evidence and does not gate PASS.
-
-    Phase 6: persists run to Firestore synchronously; adds
-      persisted / persistence_error / persistence_error_type to the response.
-      These three keys are ALWAYS present, even when persistence is disabled.
+    Returns a JSON object with `run_id`, `template_name`, and a `zones`
+    list. Each zone entry contains `consensus` and `validation` blocks.
+    Run results are not persisted.
     """
     run_id = str(uuid.uuid4())
     batched_zone_bytes: dict = {}
@@ -369,30 +360,11 @@ async def run_template(
             zones_processed=len(zone_results),
         )
 
-        response_payload = {
+        return JSONResponse({
             "run_id": run_id,
             "template_name": template_name,
             "zones": zone_results,
-        }
-
-        if is_persistence_enabled():
-            persistence_flags = persist_run(
-                run_id=run_id,
-                template_name=template_name,
-                lang=effective_lang or None,
-                zones=zone_results,
-            )
-            response_payload.update(persistence_flags)
-        else:
-            response_payload.update(
-                {
-                    "persisted": False,
-                    "persistence_error": False,
-                    "persistence_error_type": None,
-                }
-            )
-
-        return JSONResponse(response_payload)
+        })
 
     except HTTPException:
         raise
