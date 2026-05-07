@@ -3,7 +3,8 @@ Tests for the unified normalizer module.
 
 Covers:
   - level semantics (`strict`, `soft`, `consensus`)
-  - kept punctuation set for strict/soft (`!?".,$%&` plus placeholder syntax)
+  - kept punctuation set for strict/soft (`!?".,$%&` only)
+  - decoration brackets `<>[]` are stripped at strict/soft level
   - placeholder removal (whitelist only) at `soft` level
   - line-multiset PASS via `compare_lines`
   - Levenshtein similarity is evidence (does not gate PASS)
@@ -30,6 +31,14 @@ class TestNormalizeLevels(unittest.TestCase):
         for ch in ("/", "\\", "|", ":", ";"):
             self.assertNotIn(ch, n, f"strict must drop {ch!r}")
 
+    def test_strict_drops_decoration_brackets(self):
+        # `[ ... ]` and `< ... >` around plain text are decoration; image OCR
+        # never produces them, so they must not block PASS.
+        n_sq = normalize("[ HESAB YARADIN ]", "strict")
+        self.assertEqual(n_sq, "hesab yaradin")
+        n_an = normalize("<BUY TOKENS>", "strict")
+        self.assertEqual(n_an, "buy tokens")
+
     def test_strict_lowercases_and_collapses(self):
         self.assertEqual(normalize("Hello   World", "strict"), "hello world")
 
@@ -49,9 +58,16 @@ class TestNormalizeLevels(unittest.TestCase):
         self.assertIn("hi", n)
         self.assertIn("buy", n)
 
-    def test_soft_keeps_non_whitelisted_cta(self):
+    def test_soft_strips_non_whitelisted_brackets(self):
+        # Whitelist is bypassed ("BUY TOKENS" is not a placeholder name)
+        # but the surrounding brackets are still treated as decoration
+        # and removed.
         n = normalize("Click <BUY TOKENS> now", "soft")
-        self.assertIn("<buy tokens>", n)
+        self.assertNotIn("<", n)
+        self.assertNotIn(">", n)
+        self.assertIn("buy tokens", n)
+        self.assertIn("click", n)
+        self.assertIn("now", n)
 
     def test_consensus_strips_punctuation_keeps_placeholder_syntax(self):
         n = normalize("Hello, world! `code` %X% <Y> [Z]", "consensus")
@@ -105,20 +121,16 @@ class TestCompareLines(unittest.TestCase):
         self.assertEqual(r["mode"], "none")
 
     def test_extra_punctuation_fails_at_strict(self):
-        # User policy: keep `! ? " . , $ % &` — differing punctuation
-        # within the kept set must produce MANUAL.
+        # Differing kept-set punctuation must produce MANUAL.
         r = compare_lines("Buy now!", "Buy now", level="strict")
         self.assertFalse(r["pass"])
 
-    def test_placeholder_expanded_passes_at_soft(self):
-        # Placeholder tokens evaporate at `soft` level.
-        r = compare_lines("Hi Alice", "Hi %username%", level="soft")
-        # Both normalize to "hi" + (whitelist removed) — OCR keeps "alice".
-        # Soft normalization removes the placeholder from ref but not
-        # from OCR — so this should NOT pass exact, but may pass via
-        # line_multiset only if both reduce to identical lines. We only
-        # assert no false PASS.
-        self.assertIn(r["pass"], (True, False))
+    def test_decoration_brackets_do_not_block_pass(self):
+        # Reference wraps text in `[ ... ]` (decoration only). OCR has
+        # the bare text. With strict/soft policy this must PASS.
+        r = compare_lines("HESAB YARADIN", "[ HESAB YARADIN ]", level="strict")
+        self.assertTrue(r["pass"])
+        self.assertEqual(r["mode"], "exact")
 
     def test_both_empty_pass(self):
         r = compare_lines("", "", level="soft")
@@ -133,8 +145,8 @@ class TestCompareLines(unittest.TestCase):
     def test_similarity_reported_for_evidence_when_failing(self):
         r = compare_lines("Hello world", "Hello vorld", level="soft")
         self.assertFalse(r["pass"])
-        # 1-char diff in 11 chars → high similarity (>0.85),
-        # but PASS is False because we no longer use threshold.
+        # 1-char diff in 11 chars → high similarity (>0.85), but PASS is
+        # False because we no longer use the threshold.
         self.assertGreater(r["similarity"], 0.85)
 
     def test_unicode_dashes_normalized_to_ascii(self):

@@ -9,10 +9,17 @@ Priority order for zone_status:
   1. no_engines_configured
   2. all_engines_failed
   3. no_consensus   (rule_used == no_confidence_fallback)
-  4. low_confidence (confidence < 0.70)
-  5. OK
+  4. OK
 
-C7: rule_used values:
+The per-engine confidence threshold (`< 0.70` → MANUAL `low_confidence`)
+is intentionally NOT applied here. Phase 5 (`match_pass`) is the sole
+text-content gate: if OCR matches the reference character-by-character
+(modulo line order) the zone is OK regardless of engine confidence,
+and if it does not match Phase 5 emits MANUAL `no_text_match`.
+Engine confidence remains in each `engine_result.confidence` for
+operator evidence.
+
+rule_used values:
   majority_2_of_3   — 3 engines configured, 2+ matched
   match_2           — 2 engines configured, both matched
   best_confidence   — no majority, pick by confidence
@@ -31,18 +38,10 @@ from .ocr_dispatcher import ZoneEngineResult
 
 
 def normalize_for_consensus(text: str) -> str:
-    """Steps per Phase 4 Canonical v3 §5 (delegates to unified module).
-
-    1. Lowercase (Unicode-aware).
-    2. Collapse whitespace (\\s+ -> single space).
-    3. Remove ASCII punctuation only; preserves backtick, %, <, >, [, ].
-    4. Strip leading/trailing whitespace.
-    """
     return normalize(text, level="consensus")
 
 
 def _valid_confidence(confidence) -> Optional[float]:
-    """Return confidence as float if 0.0 <= conf <= 1.0, else None."""
     if confidence is None:
         return None
     try:
@@ -74,7 +73,6 @@ def resolve_consensus(
     engine_results: List[ZoneEngineResult],
     engines_configured: bool,
 ) -> dict:
-    """Resolve consensus from engine results."""
     if not engines_configured:
         return {
             "selected_engine": None,
@@ -154,16 +152,6 @@ def _make_result(winner: ZoneEngineResult, rule_used: str) -> dict:
             "rule_used": rule_used,
             "zone_status": "MANUAL",
             "reason": "no_consensus",
-        }
-
-    conf = _valid_confidence(winner.confidence)
-    if conf is not None and conf < 0.70:
-        return {
-            "selected_engine": winner.engine,
-            "selected_text": winner.text,
-            "rule_used": rule_used,
-            "zone_status": "MANUAL",
-            "reason": "low_confidence",
         }
 
     return {
