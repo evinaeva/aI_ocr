@@ -968,18 +968,27 @@ async def _process_session(
         def _pick_best_text(results: Dict[str, object]) -> tuple[Optional[str], str, float]:
             """Pick OCR text via majority consensus among engines that responded.
 
-            Engines that did not return any text (timeout, quota, network
-            failure) do not vote. If 2+ valid engines agree on the text
-            (after consensus-level normalization), the lex-smaller engine
-            name in the agreeing group wins. If only one engine returned
-            anything at all, that text is used (no cross-check possible).
-            Otherwise no winner is picked: text is empty and the caller
-            falls through to MANUAL.
+            Decision rule:
+              1. Engines that did not return any text (timeout, quota,
+                 network failure) do not vote.
+              2. If only one engine returned anything, use it.
+              3. Otherwise group by consensus-level normalized text. If
+                 a group has >=2 members, that text wins (lex by engine
+                 name inside the group as the tiebreaker).
+              4. Else (all engines disagree): fall back to the engine
+                 whose text is LONGEST after consensus-level normalization,
+                 with lex by engine name as the tiebreaker.
 
             Confidence is intentionally NOT used as a tie-breaker.
             Only Google reports it among the configured engines, so
             falling back to "highest confidence" systematically biased
             disagreement cases to Google even when its OCR was wrong.
+            Returning empty on disagreement (the previous round's
+            behavior) regressed the legacy /api/upload flow, which
+            uses _pick_best_text to feed select_best — every disagreeing
+            session was forced to MANUAL with reason missing_en_ocr_text
+            even when a fuzzy match against the reference would have
+            passed.
             """
             from app.pipeline.consensus import normalize_for_consensus
 
@@ -1004,18 +1013,21 @@ async def _process_session(
                 groups.setdefault(norm, []).append((eng, text, conf_val))
 
             best_size = max(len(g) for g in groups.values())
-            if best_size < 2:
-                # Engines disagree — no consensus, no winner. Caller
-                # treats empty text as MANUAL.
-                return None, "", -1.0
+            if best_size >= 2:
+                majority_groups = [g for g in groups.values() if len(g) == best_size]
+                majority_groups.sort(
+                    key=lambda g: normalize_for_consensus(g[0][1])
+                )
+                winning_group = majority_groups[0]
+                winning_group.sort(key=lambda x: x[0])  # lex by engine
+                eng, text, conf_val = winning_group[0]
+                return eng, text, conf_val
 
-            majority_groups = [g for g in groups.values() if len(g) == best_size]
-            majority_groups.sort(
-                key=lambda g: normalize_for_consensus(g[0][1])
-            )
-            winning_group = majority_groups[0]
-            winning_group.sort(key=lambda x: x[0])  # lex by engine name
-            eng, text, conf_val = winning_group[0]
+            # No 2-of-N agreement. Pick the engine with the longest
+            # normalized text — proxy for "most complete OCR output".
+            # Lex by engine name to break ties deterministically.
+            valid.sort(key=lambda x: (-len(normalize_for_consensus(x[1])), x[0]))
+            eng, text, conf_val = valid[0]
             return eng, text, conf_val
 
         if en_source_image_name is not None:
