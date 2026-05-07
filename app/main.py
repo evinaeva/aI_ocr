@@ -970,10 +970,16 @@ async def _process_session(
 
             Engines that did not return any text (timeout, quota, network
             failure) do not vote. If 2+ valid engines agree on the text
-            (after consensus-level normalization), one of them wins
-            (highest confidence inside the agreeing group, then engine
-            name lex order). Otherwise fall back to the engine with the
-            highest reported confidence — same as the previous behavior.
+            (after consensus-level normalization), the lex-smaller engine
+            name in the agreeing group wins. If only one engine returned
+            anything at all, that text is used (no cross-check possible).
+            Otherwise no winner is picked: text is empty and the caller
+            falls through to MANUAL.
+
+            Confidence is intentionally NOT used as a tie-breaker.
+            Only Google reports it among the configured engines, so
+            falling back to "highest confidence" systematically biased
+            disagreement cases to Google even when its OCR was wrong.
             """
             from app.pipeline.consensus import normalize_for_consensus
 
@@ -998,18 +1004,18 @@ async def _process_session(
                 groups.setdefault(norm, []).append((eng, text, conf_val))
 
             best_size = max(len(g) for g in groups.values())
-            if best_size >= 2:
-                majority_groups = [g for g in groups.values() if len(g) == best_size]
-                majority_groups.sort(
-                    key=lambda g: normalize_for_consensus(g[0][1])
-                )
-                winning_group = majority_groups[0]
-                winning_group.sort(key=lambda x: (-x[2], x[0]))
-                eng, text, conf_val = winning_group[0]
-                return eng, text, conf_val
+            if best_size < 2:
+                # Engines disagree — no consensus, no winner. Caller
+                # treats empty text as MANUAL.
+                return None, "", -1.0
 
-            valid.sort(key=lambda x: (-x[2], x[0]))
-            eng, text, conf_val = valid[0]
+            majority_groups = [g for g in groups.values() if len(g) == best_size]
+            majority_groups.sort(
+                key=lambda g: normalize_for_consensus(g[0][1])
+            )
+            winning_group = majority_groups[0]
+            winning_group.sort(key=lambda x: x[0])  # lex by engine name
+            eng, text, conf_val = winning_group[0]
             return eng, text, conf_val
 
         if en_source_image_name is not None:
