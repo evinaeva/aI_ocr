@@ -1,39 +1,38 @@
 """
 Section matcher: parse DOCX/TXT, score candidates, pick best match.
+
+strict_equal / soft_equal are computed via the unified `compare_lines`
+primitive, so reordered lines no longer force MANUAL when the OCR text
+still matches the reference character-by-character.
 """
 import io
 import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
-from .normalizer import normalize_strict, normalize_soft, has_placeholder
+from .normalizer import (
+    normalize_strict,
+    normalize_soft,
+    has_placeholder,
+    compare_lines,
+)
 
-# ─── Keyword scoring ──────────────────────────────────────────────────────────────
+# ─── Keyword scoring ───────────────────────────────────────────────
 HIGH_PRIORITY_NAMES = {"banner", "pic", "im", "popup"}
 PENALTY_NAMES = {"news", "email", "letter", "subject"}
 
 # Languages that use characters instead of spaces (no word tokenisation)
 _CJK_LANGS = {"ja", "zh", "zh-hans", "zh-hant", "zh-cn", "zh-tw"}
 
-# Section header regex: "5. NAME"
-# Handles various unicode separators seen in localized DOCX files:
-#   .       U+002E  standard full stop
-#   ․       U+2024  ONE DOT LEADER (used in Armenian/hy rows 1-3)
-#   ։       U+0589  ARMENIAN FULL STOP
-#   ۔       U+06D4  ARABIC FULL STOP (Urdu)
-#   ．       U+FF0E  FULLWIDTH FULL STOP (Japanese DOCX)
-#   no sep         e.g. "5 ՆԿԱՌ" (number followed directly by space+name)
 _HEADER_RE = re.compile(
-    r"^(\d+)"                           # leading digit(s)
-    r"[.\u2024\u0589\u06D4\uFF0E]?"    # optional separator
-    r"\s*"                               # zero or more spaces
-    r"([^\d].*)$",                       # section name (must not start with digit)
+    r"^(\d+)"
+    r"[.․։۔．]?"
+    r"\s*"
+    r"([^\d].*)$",
     re.IGNORECASE,
 )
 
-# Characters to strip from the beginning of a parsed section name
-# (e.g. fullwidth dot ． left after regex group capture)
-_NAME_LEADING_STRIP_RE = re.compile(r"^[\s.\u2024\u0589\u06D4\uFF0E]+")
+_NAME_LEADING_STRIP_RE = re.compile(r"^[\s.․։۔．]+")
 
 
 @dataclass
@@ -68,14 +67,6 @@ class SelectionResult:
     confidence_margin: float = 0.0
 
 
-# Score range is derived from fixed scoring rules in _score_section:
-#   name score:      min=-0.5, max=+1.0
-#   long-text penalty:      -0.3
-#   strict bonus:           +5.0
-# Therefore:
-#   S_MIN = -0.5 + (-0.3) = -0.8
-#   S_MAX = +1.0 + (+5.0) = +6.0
-# Jaccard fallback (+ up to 2.0) and soft_equal (+3.0) stay below S_MAX.
 _SCORE_MIN = -0.8
 _SCORE_MAX = 6.0
 _MARGIN_MAX = _SCORE_MAX - _SCORE_MIN
@@ -85,22 +76,13 @@ def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, value))
 
 
-def _reference_confidence(top1: Optional[ScoredCandidate], top2: Optional[ScoredCandidate]) -> tuple[float, Optional[float], Optional[float], float]:
-    """
-    Deterministic confidence for reference matching based on top-1 score (s1)
-    and top-2 gap (margin = s1 - s2).
-
-    Score bounds are derived from this scorer's fixed rules:
-    - minimum ~= -0.8 (name penalty -0.5 + long_text penalty -0.3)
-    - maximum = 6.0 (strict_equal +5.0 plus high-priority name +1.0)
-    """
+def _reference_confidence(top1: Optional[ScoredCandidate], top2: Optional[ScoredCandidate]):
     if top1 is None:
         return 0.0, None, None, 0.0
 
     s1 = float(top1.score)
     s2 = float(top2.score) if top2 is not None else None
 
-    # Clamp protects against out-of-range values if scoring rules change.
     s1n = _clamp01((s1 - _SCORE_MIN) / (_SCORE_MAX - _SCORE_MIN))
 
     top1_content = normalize_soft(top1.section.content_text)
@@ -116,13 +98,9 @@ def _reference_confidence(top1: Optional[ScoredCandidate], top2: Optional[Scored
     return conf, s1, s2, margin
 
 
-# ─── DOCX parsing ───────────────────────────────────────────────────────────────
+# ─── DOCX parsing ──────────────────────────────────────────────────
 
 def _parse_header(line: str) -> Optional[tuple]:
-    """
-    Try to parse a section header. Returns (number, name) or None.
-    Strips leading punctuation artifacts from the name (e.g. ． from Japanese DOCX).
-    """
     stripped = line.strip()
     m = _HEADER_RE.match(stripped)
     if m:
@@ -132,7 +110,6 @@ def _parse_header(line: str) -> Optional[tuple]:
 
 
 def _cell_to_section(cell_text: str) -> Optional[Section]:
-    """Parse a single DOCX table cell into a Section."""
     cell_text = cell_text.strip()
     if not cell_text:
         return None
@@ -175,7 +152,6 @@ def _text_from_docx_bytes(docx_bytes: bytes) -> List[Section]:
 
 
 def _is_likely_txt_header_name(name: str) -> bool:
-    """Conservative TXT-only heuristic to avoid treating banner copy as section headers."""
     stripped = name.strip()
     if not stripped or stripped[-1] in "!?.,:;":
         return False
@@ -207,8 +183,6 @@ def _text_from_txt_bytes(txt_bytes: bytes) -> List[Section]:
     content = text.strip()
     return [Section(number=None, name="UNKNOWN", content_text=content, raw_header="")] if content else []
 
-
-# ─── Heading 2 style segmentation ────────────────────────────────────────────────
 
 def _parse_sections_from_paragraphs(paragraphs) -> List[Section]:
     sections: List[Section] = []
@@ -260,8 +234,6 @@ def _parse_sections_from_paragraphs(paragraphs) -> List[Section]:
     return sections if found_heading else []
 
 
-# ─── Line-based segmentation (fallback) ─────────────────────────────────────────
-
 def _parse_sections_from_lines(lines: List[str], header_validator=None) -> List[Section]:
     sections: List[Section] = []
     current_lines: List[str] = []
@@ -309,17 +281,14 @@ def _parse_sections_from_lines(lines: List[str], header_validator=None) -> List[
     return sections
 
 
-# ─── Public entry ─────────────────────────────────────────────────────────────────
-
 def extract_sections(file_bytes: bytes, filename: str) -> List[Section]:
     fname_lower = filename.lower()
     if fname_lower.endswith(".docx"):
         return _text_from_docx_bytes(file_bytes)
-    else:
-        return _text_from_txt_bytes(file_bytes)
+    return _text_from_txt_bytes(file_bytes)
 
 
-# ─── Scoring ─────────────────────────────────────────────────────────────────────
+# ─── Scoring ──────────────────────────────────────────────────────────────
 
 def _count_tokens(text: str, lang: str) -> int:
     if lang in _CJK_LANGS:
@@ -328,13 +297,8 @@ def _count_tokens(text: str, lang: str) -> int:
 
 
 def _name_score(name: str) -> float:
-    """Return priority score based on section name.
-    Uses only the first ASCII-normalized word for matching.
-    """
-    # Strip leading non-word chars, take first word, ASCII-normalize
     clean = re.sub(r"^[^\w]+", "", name, flags=re.UNICODE)
     first = clean.split()[0].lower() if clean.split() else ""
-    # Normalize full-width letters to ASCII (e.g. PIC -> pic)
     first = first.encode('ascii', errors='ignore').decode('ascii')
     if first in HIGH_PRIORITY_NAMES:
         return 1.0
@@ -353,32 +317,29 @@ def _score_section(section: Section, ocr_text: str, lang: str) -> ScoredCandidat
         score *= 0.5
         warnings.append("has_placeholder")
 
-    ocr_soft  = normalize_soft(ocr_text)
-    cand_soft = normalize_soft(content)
+    cand_soft   = normalize_soft(content)
     cand_tokens = _count_tokens(cand_soft, lang)
 
     if lang not in _CJK_LANGS and cand_tokens > 50:
         score -= 0.3
         warnings.append("long_text")
 
-    ocr_strict  = normalize_strict(ocr_text)
-    cand_strict = normalize_strict(content)
-    strict_equal = bool(ocr_strict and cand_strict and ocr_strict == cand_strict)
-    soft_equal   = bool(ocr_soft and cand_soft and ocr_soft == cand_soft)
+    strict_cmp = compare_lines(ocr_text, content, level="strict")
+    soft_cmp   = compare_lines(ocr_text, content, level="soft")
+    strict_equal = bool(strict_cmp["pass"])
+    soft_equal   = bool(soft_cmp["pass"])
 
     if strict_equal:
         score += 5.0
     elif soft_equal:
         score += 3.0
     else:
+        ocr_soft = normalize_soft(ocr_text)
         ocr_tokens_set  = set(ocr_soft.split())
         cand_tokens_set = set(cand_soft.split())
         if ocr_tokens_set and cand_tokens_set:
             overlap = len(ocr_tokens_set & cand_tokens_set)
             union   = len(ocr_tokens_set | cand_tokens_set)
-            # Jaccard = |intersection(tokens)| / |union(tokens)|.
-            # Multiplier 2.0 is a simple score scaling to keep this fallback
-            # comparable with the strict/soft match bonus scale.
             score  += (overlap / union) * 2.0 if union else 0
 
     return ScoredCandidate(
@@ -388,7 +349,7 @@ def _score_section(section: Section, ocr_text: str, lang: str) -> ScoredCandidat
     )
 
 
-# ─── Selection ────────────────────────────────────────────────────────────────────
+# ─── Selection ────────────────────────────────────────────────────────────
 
 def select_best(
     sections: List[Section],
@@ -407,7 +368,6 @@ def select_best(
                                status="MANUAL", delta=0.0, reason="ocr_too_short",
                                reference_confidence=0.0, score_top1=None, score_top2=None, confidence_margin=0.0)
 
-    # ── HINT HARD FILTER ──────────────────────────────────────────────────────────
     filtered = sections
     if hint_number is not None:
         by_num = [s for s in sections if s.number == hint_number]
@@ -426,13 +386,9 @@ def select_best(
     delta = (top1.score - top2.score) if top2 else 999.0
     conf, s1, s2, margin = _reference_confidence(top1, top2)
 
-    # all_placeholders: only trigger if hint narrowed to a single section
-    # OR if all filtered candidates have placeholders
     if all(c.has_placeholder_flag for c in candidates):
-        # If there's a hint (number or name) and we matched exactly one section,
-        # still try to match — don't bail out as all_placeholders
         if hint_number is not None and len(filtered) == 1:
-            pass  # fall through to normal scoring
+            pass
         else:
             return SelectionResult(best=top1, all_candidates=candidates, manual_required=True,
                                    status="MANUAL", delta=delta, reason="all_placeholders",
