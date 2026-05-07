@@ -20,10 +20,10 @@ Engine confidence remains in each `engine_result.confidence` for
 operator evidence.
 
 rule_used values:
-  majority_2_of_3   — 3 engines configured, 2+ matched
-  match_2           — 2 engines configured, both matched
-  best_confidence   — no majority, pick by confidence
-  no_confidence_fallback — no match and no confidence
+  majority_2_of_3        — 3 engines configured, 2+ matched
+  match_2                — 2 engines configured, both matched
+  no_confidence_fallback — no majority; longest normalized text wins
+                           (lex by engine name as tiebreaker)
 
 Normalization for engine-vs-engine comparison is delegated to the unified
 `app.normalizer.normalize(text, level="consensus")`. Behavior matches the
@@ -56,16 +56,10 @@ def _valid_confidence(confidence) -> Optional[float]:
 def _pick_from_group(group: List[ZoneEngineResult]) -> ZoneEngineResult:
     """Pick the representative engine from a majority group.
 
-    Deterministic rule (Phase 4 Canonical v3 §6, B1):
-      (1) highest valid confidence in [0.0, 1.0]
-      (2) lexicographically smaller engine name
+    Lex by engine name. Confidence is intentionally NOT used as a
+    tiebreaker — only Google reports it among the configured engines,
+    so any confidence-based rule biases every tie to Google.
     """
-    with_conf = [(r, _valid_confidence(r.confidence)) for r in group
-                 if _valid_confidence(r.confidence) is not None]
-
-    if with_conf:
-        with_conf.sort(key=lambda x: (-x[1], x[0].engine))
-        return with_conf[0][0]
     return min(group, key=lambda r: r.engine)
 
 
@@ -118,25 +112,15 @@ def resolve_consensus(
         winner = _pick_from_group(winning_group)
         return _make_result(winner, rule)
 
-    with_conf = [
-        r for r in valid_sorted if _valid_confidence(r.confidence) is not None
-    ]
-
-    if with_conf:
-        winner = min(
-            with_conf,
-            key=lambda r: (
-                -_valid_confidence(r.confidence),
-                normalize_for_consensus(r.text),
-                r.engine,
-            ),
-        )
-        return _make_result(winner, "best_confidence")
-
+    # No 2-of-N agreement. Pick deterministically by longest
+    # consensus-normalized text (lex by engine name as tiebreaker).
+    # Confidence is intentionally NOT used: only Google reports it,
+    # so a confidence-based rule systematically biased disagreement
+    # cases to Google even when its OCR was wrong.
     winner = min(
         valid_sorted,
         key=lambda r: (
-            -len(r.text.strip()),
+            -len(normalize_for_consensus(r.text)),
             r.text,
             r.engine,
         ),
