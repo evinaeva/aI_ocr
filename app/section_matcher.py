@@ -4,6 +4,11 @@ Section matcher: parse DOCX/TXT, score candidates, pick best match.
 strict_equal / soft_equal are computed via the unified `compare_lines`
 primitive, so reordered lines no longer force MANUAL when the OCR text
 still matches the reference character-by-character.
+
+A TXT is treated as a structured (sectioned) document only when at
+least two explicit numbered headers are present. A single header-shaped
+line (e.g. `10 JETON` in a banner copy) is treated as ordinary content
+and the whole TXT becomes one UNKNOWN section.
 """
 import io
 import re
@@ -17,7 +22,7 @@ from .normalizer import (
     compare_lines,
 )
 
-# ─── Keyword scoring ───────────────────────────────────────────────
+# ─── Keyword scoring ────────────────────────────────────────
 HIGH_PRIORITY_NAMES = {"banner", "pic", "im", "popup"}
 PENALTY_NAMES = {"news", "email", "letter", "subject"}
 
@@ -33,6 +38,13 @@ _HEADER_RE = re.compile(
 )
 
 _NAME_LEADING_STRIP_RE = re.compile(r"^[\s.․։۔．]+")
+
+# Minimum number of explicit numbered headers a TXT must have before it
+# is treated as structured. Banner/marketing copy frequently contains a
+# single numeric line ("10 JETON", "5 TICKETS") that looks header-shaped
+# but is part of the body — sectioning on a single such line splits the
+# banner and breaks downstream comparison.
+_MIN_TXT_HEADERS_FOR_SECTIONING = 2
 
 
 @dataclass
@@ -98,7 +110,7 @@ def _reference_confidence(top1: Optional[ScoredCandidate], top2: Optional[Scored
     return conf, s1, s2, margin
 
 
-# ─── DOCX parsing ──────────────────────────────────────────────────
+# ─── DOCX parsing ────────────────────────────────────────────
 
 def _parse_header(line: str) -> Optional[tuple]:
     stripped = line.strip()
@@ -176,12 +188,21 @@ def _text_from_txt_bytes(txt_bytes: bytes) -> List[Section]:
         header_validator=lambda _num, name, _raw: _is_likely_txt_header_name(name),
     )
 
-    explicit_headers = [sec for sec in parsed_sections if sec.number is not None and sec.raw_header]
-    if explicit_headers:
+    explicit_headers = [
+        sec for sec in parsed_sections
+        if sec.number is not None and sec.raw_header
+    ]
+    if len(explicit_headers) >= _MIN_TXT_HEADERS_FOR_SECTIONING:
         return parsed_sections
 
+    # Single or no header-shaped line — treat the whole TXT as one block.
+    # Banner copy commonly has "10 JETON" / "5 TICKETS" continuations that
+    # look like headers but aren't. Sectioning on them has been a source
+    # of false MANUALs.
     content = text.strip()
-    return [Section(number=None, name="UNKNOWN", content_text=content, raw_header="")] if content else []
+    if not content:
+        return []
+    return [Section(number=None, name="UNKNOWN", content_text=content, raw_header="")]
 
 
 def _parse_sections_from_paragraphs(paragraphs) -> List[Section]:
@@ -288,7 +309,7 @@ def extract_sections(file_bytes: bytes, filename: str) -> List[Section]:
     return _text_from_txt_bytes(file_bytes)
 
 
-# ─── Scoring ──────────────────────────────────────────────────────────────
+# ─── Scoring ────────────────────────────────────────────────────────
 
 def _count_tokens(text: str, lang: str) -> int:
     if lang in _CJK_LANGS:
@@ -349,7 +370,7 @@ def _score_section(section: Section, ocr_text: str, lang: str) -> ScoredCandidat
     )
 
 
-# ─── Selection ────────────────────────────────────────────────────────────
+# ─── Selection ───────────────────────────────────────────────────────
 
 def select_best(
     sections: List[Section],
