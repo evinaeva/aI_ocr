@@ -7,13 +7,17 @@ Single source of truth used by:
   - section_matcher    (level="strict" / "soft")
 
 Three normalization levels:
-  - "strict"    — full unicode cleanup, lowercase, keeps `! ? " . , $ % &`
-                  and placeholder syntax `< > [ ]`. Everything else outside
-                  word characters and whitespace is replaced by space.
-                  No placeholder removal.
+  - "strict"    — full unicode cleanup, lowercase, keeps `! ? " . , $ % &`.
+                  Everything else outside word characters and whitespace
+                  is replaced by space. No placeholder removal.
+                  `<`, `>`, `[`, `]` are dropped as decoration: text such
+                  as `[ HESAB YARADIN ]` becomes `hesab yaradin`. Whitelist
+                  placeholders (e.g. <displayname>) are still detected by
+                  the placeholder removal pass at `soft` level before this
+                  strip runs.
   - "soft"      — same as strict, but whitelisted placeholder tokens
-                  (e.g. %displayname%, [username], <skin>) are removed.
-                  CTA markup like <BUY TOKENS> stays intact.
+                  (e.g. %displayname%, [username], <skin>) are removed
+                  before the punctuation strip.
   - "consensus" — minimal cleanup for engine-vs-engine matching;
                   byte-equivalent to the previous Phase 4 implementation.
                   Lowercase + collapse whitespace + strip a fixed set of
@@ -56,8 +60,11 @@ _ALL_PCT    = re.compile(r"%[^%]+%")
 _BRAND_REMOVE_RE = re.compile(r"\bbongacams\b", re.IGNORECASE)
 
 # ── Punctuation policy ────────────────────────────────────────
-# strict/soft: keep `! ? " . , $ % &` and placeholder syntax `< > [ ]`.
-_STRIP_STRICT_RE = re.compile(r'[^\w\s!?".,$%&<>\[\]]', re.UNICODE)
+# strict/soft keep `! ? " . , $ % &`. Everything else — including the
+# decoration brackets `< > [ ]` — is replaced by space and collapsed.
+# Whitelist placeholders are matched and removed before this strip runs
+# at `soft` level, so e.g. `<displayname>` still vanishes correctly.
+_STRIP_STRICT_RE = re.compile(r'[^\w\s!?".,$%&]', re.UNICODE)
 
 # consensus: byte-equivalent to old normalize_for_consensus.
 # Strips this fixed ASCII set; preserves backtick, %, <, >, [, ].
@@ -216,15 +223,7 @@ def _normalize_lines(text: str, level: str) -> List[str]:
 
 
 def compare_lines(ocr: str, ref: str, level: str = "soft") -> dict:
-    """PASS/MANUAL primitive.
-
-    Returns dict with keys:
-      pass:        bool
-      mode:        "exact" | "line_multiset" | "none"
-      similarity:  Levenshtein similarity on joined-normalized strings
-      lines_ocr:   number of non-empty normalized OCR lines
-      lines_ref:   number of non-empty normalized reference lines
-    """
+    """PASS/MANUAL primitive. See module docstring."""
     full_ocr = normalize(ocr or "", level)
     full_ref = normalize(ref or "", level)
 
