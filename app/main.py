@@ -41,7 +41,6 @@ from .ocr import (
     _google_cache_put,
     emit_startup_warnings,
     google_batch_annotate_images,
-    run_ocr_multi,
 )
 from .pipeline import template_store
 from .pipeline.batch_routes import batch_router  # P2.4: v2-batch job orchestration
@@ -966,57 +965,40 @@ async def _process_session(
             return float(raw_conf) if isinstance(raw_conf, (int, float)) else None
 
         def _pick_best_text(results: Dict[str, object]) -> tuple[Optional[str], str, float]:
-            """Pick OCR text via majority consensus among engines that responded.
+            """Adapter around `resolve_consensus`.
 
-            Engines that did not return any text (timeout, quota, network
-            failure) do not vote. If 2+ valid engines agree on the text
-            (after consensus-level normalization), the lex-smaller engine
-            name in the agreeing group wins. If only one engine returned
-            anything at all, that text is used (no cross-check possible).
-            Otherwise no winner is picked: text is empty and the caller
-            falls through to MANUAL.
-
-            Confidence is intentionally NOT used as a tie-breaker.
-            Only Google reports it among the configured engines, so
-            falling back to "highest confidence" systematically biased
-            disagreement cases to Google even when its OCR was wrong.
+            The picker logic (majority of N, deterministic fallback,
+            confidence rules) lives in app.pipeline.consensus — this
+            wrapper just translates the legacy {engine: OCRResult}
+            dict into the ZoneEngineResult list that the canonical
+            resolver expects, and unwraps the result back into the
+            (engine, text, conf) tuple this module's call sites still
+            use.
             """
-            from app.pipeline.consensus import normalize_for_consensus
+            from app.pipeline.consensus import resolve_consensus
+            from app.pipeline.ocr_dispatcher import ZoneEngineResult
 
-            valid: list[tuple[str, str, float]] = []
+            engine_results: list = []
             for eng, res in results.items():
                 text = _res_text(res)
                 if not text:
                     continue
                 conf = _res_conf(res)
-                conf_val = conf if conf is not None else -1.0
-                valid.append((eng, text, conf_val))
+                engine_results.append(ZoneEngineResult(
+                    engine=eng,
+                    text=text,
+                    confidence=conf,
+                    latency_ms=0.0,
+                    error=None,
+                ))
 
-            if not valid:
-                return None, "", -1.0
-            if len(valid) == 1:
-                eng, text, conf_val = valid[0]
-                return eng, text, conf_val
-
-            groups: Dict[str, list[tuple[str, str, float]]] = {}
-            for eng, text, conf_val in valid:
-                norm = normalize_for_consensus(text)
-                groups.setdefault(norm, []).append((eng, text, conf_val))
-
-            best_size = max(len(g) for g in groups.values())
-            if best_size < 2:
-                # Engines disagree — no consensus, no winner. Caller
-                # treats empty text as MANUAL.
+            if not engine_results:
                 return None, "", -1.0
 
-            majority_groups = [g for g in groups.values() if len(g) == best_size]
-            majority_groups.sort(
-                key=lambda g: normalize_for_consensus(g[0][1])
-            )
-            winning_group = majority_groups[0]
-            winning_group.sort(key=lambda x: x[0])  # lex by engine name
-            eng, text, conf_val = winning_group[0]
-            return eng, text, conf_val
+            out = resolve_consensus(engine_results, engines_configured=True)
+            selected_engine = out.get("selected_engine")
+            selected_text = out.get("selected_text") or ""
+            return selected_engine, selected_text, -1.0
 
         if en_source_image_name is not None:
             try:
@@ -1043,16 +1025,12 @@ async def _process_session(
                                 if zt:
                                     zone_texts.append(zt)
                         en_source_best_text = "\n".join(zone_texts)
-                elif not target_zones and en_source_bytes is not None:
-                    counters["ocr_dispatch_reached_total"] += 1
-                    _raw_en = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        run_ocr_multi,
-                        en_source_bytes,
-                        engines,
-                    )
-                    en_source_ocr_results = {eng: res for eng, res in _raw_en.items()}
-                    _, en_source_best_text, _ = _pick_best_text(en_source_ocr_results)
+                # Legacy whole-image fallback removed: the contract
+                # requires a per-zone crop. With no template
+                # (target_zones empty) we leave en_source_best_text
+                # empty so the row finishes as MANUAL with reason
+                # `missing_en_ocr_text` instead of silently OCRing
+                # the entire banner image.
             except Exception:
                 en_source_ocr_results = None
                 en_source_best_text = ""
@@ -1297,13 +1275,12 @@ async def _process_session(
                     engines,
                 )
             else:
-                counters["ocr_dispatch_reached_total"] += 1
-                ocr_results = await asyncio.get_event_loop().run_in_executor(
-                    None,
-                    run_ocr_multi,
-                    image_bytes,
-                    engines,
-                )
+                # Legacy whole-image OCR fallback (run_ocr_multi on the
+                # full image bytes) removed — the contract requires a
+                # per-zone crop. Empty results keep the row in MANUAL
+                # with reason `crop_required` instead of sending the
+                # whole banner to Google.
+                ocr_results = {}
 
             best_engine, best_text, best_conf = _pick_best_text(ocr_results)
 

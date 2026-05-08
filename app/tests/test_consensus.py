@@ -86,16 +86,24 @@ class TestConsensus(unittest.TestCase):
         self.assertEqual(result["selected_engine"], "azure")
         self.assertEqual(result["zone_status"], "OK")
 
-    def test_best_confidence(self):
+    def test_disagreement_picks_longest_text(self):
+        # Three different texts, no 2-of-3 agreement. After dropping
+        # the best_confidence rule the picker falls through directly
+        # to the longest-text deterministic fallback and returns
+        # MANUAL `no_consensus`. Confidence is not consulted: only
+        # Google reports it, so a confidence-based rule biased every
+        # disagreement to Google.
         results = [
-            make_result("google", "Hello World", confidence=0.95),
+            make_result("google", "Hello", confidence=0.95),
             make_result("azure", "Helo World", confidence=0.72),
             make_result("ocrspace", "Hello Warld", confidence=0.80),
         ]
         result = resolve_consensus(results, engines_configured=True)
-        self.assertEqual(result["rule_used"], "best_confidence")
-        self.assertEqual(result["selected_engine"], "google")
-        self.assertEqual(result["zone_status"], "OK")
+        self.assertEqual(result["rule_used"], "no_confidence_fallback")
+        self.assertEqual(result["zone_status"], "MANUAL")
+        self.assertEqual(result["reason"], "no_consensus")
+        # ocrspace text is longest after normalization; it wins.
+        self.assertEqual(result["selected_engine"], "ocrspace")
 
     def test_no_confidence_fallback(self):
         results = [
@@ -117,17 +125,21 @@ class TestConsensus(unittest.TestCase):
         self.assertEqual(result["selected_engine"], "azure")
         self.assertEqual(result["zone_status"], "OK")
 
-    def test_low_confidence_no_longer_downgrades(self):
-        # The low_confidence MANUAL gate has been removed. A single engine
-        # with conf < 0.70 now goes through best_confidence → OK; Phase 5
-        # is the sole text-content gate.
+    def test_single_engine_falls_through_to_no_consensus(self):
+        # No best_confidence rule any more — and no low_confidence
+        # MANUAL gate either. With one valid engine the result is
+        # MANUAL via the longest-text fallback (rule_used =
+        # no_confidence_fallback) because there is nothing to vote
+        # against; downstream Phase 5 (`match_pass`) decides whether
+        # the actual text matches the reference.
         results = [
             make_result("google", "Some text", confidence=0.65),
         ]
         result = resolve_consensus(results, engines_configured=True)
-        self.assertEqual(result["zone_status"], "OK")
-        self.assertIsNone(result["reason"])
         self.assertEqual(result["selected_engine"], "google")
+        self.assertEqual(result["rule_used"], "no_confidence_fallback")
+        self.assertEqual(result["zone_status"], "MANUAL")
+        self.assertEqual(result["reason"], "no_consensus")
 
     def test_empty_string_valid(self):
         results = [
