@@ -99,7 +99,17 @@ async def phase2_run(upload_id: str, body: Optional[Phase2RunRequest] = None):
     section_number = row["section_number"]
     section_name = row["section_name"]
     conn.close()
-    target_zones = _resolve_target_zones(body.template_name if body is not None else None)
+
+    template_name = body.template_name if body is not None else None
+    target_zones = _resolve_target_zones(template_name)
+    if not target_zones:
+        return JSONResponse(
+            {"error": "template_required", "details": (
+                f"Template '{template_name}' has no zones — every run must be driven by "
+                "a template's crop layout. Open the template editor and define zones first."
+            )},
+            status_code=400,
+        )
 
     session_id = main_module._start_session_from_zip(
         zip_bytes,
