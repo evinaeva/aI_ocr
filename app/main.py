@@ -48,7 +48,6 @@ from .pipeline.cropped_image import CroppedImage
 from .pipeline.models import ZoneDef
 from .pipeline.ocr_dispatcher import dispatch_zone_ocr
 from .pipeline.preprocessor import load_image, make_cropped_image
-from .pipeline.history_routes import history_router  # always imported — see Phase 6 fix
 from .pipeline.phase2_routes import phase2_router
 from .pipeline.preview_routes import preview_router
 from .pipeline.run_routes import run_router
@@ -175,7 +174,6 @@ app.include_router(template_router)
 app.include_router(editor_router)
 app.include_router(preview_router)
 app.include_router(run_router)
-app.include_router(history_router)  # unconditional — endpoints return 503 when persistence disabled
 app.include_router(batch_router)  # P2.4: v2-batch job orchestration (additive)
 app.include_router(phase2_router)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
@@ -674,49 +672,6 @@ async def phase2_preview(upload_id: str, target_id: str):
     return Response(content=img_bytes, media_type=media)
 
 
-@app.post("/api/phase2/check/{upload_id}")
-async def phase2_check(upload_id: str, request: Request):
-    conn = get_db()
-    row = conn.execute(
-        "SELECT zip_bytes, section_number, section_name, created_at FROM phase2_uploads WHERE upload_id=?",
-        (upload_id,),
-    ).fetchone()
-    if not row:
-        conn.close()
-        return JSONResponse({"error": "upload not found"}, status_code=404)
-    if row["created_at"] < time.time() - SESSION_TTL_SECONDS:
-        conn.close()
-        return JSONResponse({"error": "upload expired"}, status_code=410)
-
-    template_name = None
-    try:
-        payload = await request.json()
-        if isinstance(payload, dict):
-            raw_template_name = payload.get("template_name")
-            if isinstance(raw_template_name, str) and raw_template_name.strip():
-                template_name = raw_template_name.strip()
-    except Exception:
-        template_name = None
-
-    from app.pipeline.phase2_routes import _resolve_target_zones
-
-    target_zones = _resolve_target_zones(template_name)
-    engines = ["google", "azure", "ocrspace"]
-    zip_bytes = bytes(row["zip_bytes"])
-    section_number = row["section_number"]
-    section_name = row["section_name"]
-    conn.close()
-
-    session_id = _start_session_from_zip(
-        zip_bytes,
-        section_number,
-        section_name,
-        engines,
-        target_zones=target_zones,
-    )
-    return JSONResponse({"session_id": session_id, "engines": engines})
-
-
 @app.get("/api/phase2/error_paths/{session_id}")
 async def phase2_error_paths(session_id: str):
     conn = get_db()
@@ -733,8 +688,10 @@ def _start_session_from_zip(
     section_number: Optional[int],
     section_name: Optional[str],
     engines: List[str],
-    target_zones: Optional[Dict[str, List[dict]]] = None,
+    target_zones: Dict[str, List[dict]],
 ) -> str:
+    if not target_zones:
+        raise ValueError("target_zones required — every session must be driven by a template's crop layout")
     session_id = str(uuid.uuid4())
 
     conn = get_db()
@@ -842,29 +799,13 @@ def _prefetch_google_for_zip_items(
 _VALID_ENGINES = set(ALL_ENGINES)
 
 
-@app.post("/api/upload")
-async def upload(
-    zip_file: UploadFile = File(...),
-    engines: Optional[str] = Form("google"),  # comma-separated list
-    section_number: Optional[int] = Form(None),
-    section_name: Optional[str] = Form(None),
-):
-    selected = [e.strip() for e in (engines or "google").split(",") if e.strip() in _VALID_ENGINES]
-    if not selected:
-        selected = ["google"]
-
-    zip_bytes = await zip_file.read()
-    session_id = _start_session_from_zip(zip_bytes, section_number, section_name, selected)
-    return JSONResponse({"session_id": session_id, "engines": selected})
-
-
 async def _process_session(
     session_id: str,
     zip_bytes: bytes,
     hint_number: Optional[int],
     hint_name: Optional[str],
     engines: List[str],
-    target_zones: Optional[Dict[str, List[dict]]] = None,
+    target_zones: Dict[str, List[dict]],
 ):
     conn = get_db()
     conn.execute("UPDATE sessions SET status='processing' WHERE session_id=?", (session_id,))
@@ -1097,53 +1038,51 @@ async def _process_session(
                 )
                 continue
             if idx in missing_bbox_indices:
-                if target_zones:
-                    counters["images_skipped_total"] += 1
-                    counters["images_skipped_by_reason"]["missing_bbox"] = counters["images_skipped_by_reason"].get("missing_bbox", 0) + 1
-                    manual_count += 1
-                    conn.execute(
-                        """INSERT INTO results
-                           (session_id, lang, image_name, text_name, ref_text,
-                            section_name, section_number, status, score, reason,
-                            ocr_results_json, best_engine, reference_confidence,
-                            reference_score_top1, reference_score_top2, reference_margin, zone_name, target_id)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (
-                            session_id,
-                            lang,
-                            image_name,
-                            "",
-                            "",
-                            "",
-                            None,
-                            "MANUAL",
-                            0.0,
-                            "missing_bbox",
-                            "{}",
-                            None,
-                            0.0,
-                            None,
-                            None,
-                            0.0,
-                            zone_name,
-                            target_id,
-                        ),
-                    )
-                    conn.commit()
-                    counters["rows_inserted_by_reason"]["missing_bbox"] = counters["rows_inserted_by_reason"].get("missing_bbox", 0) + 1
-                    _push_event(
+                counters["images_skipped_total"] += 1
+                counters["images_skipped_by_reason"]["missing_bbox"] = counters["images_skipped_by_reason"].get("missing_bbox", 0) + 1
+                manual_count += 1
+                conn.execute(
+                    """INSERT INTO results
+                       (session_id, lang, image_name, text_name, ref_text,
+                        section_name, section_number, status, score, reason,
+                        ocr_results_json, best_engine, reference_confidence,
+                        reference_score_top1, reference_score_top2, reference_margin, zone_name, target_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
                         session_id,
-                        {
-                            "event": "item",
-                            "idx": idx,
-                            "lang": lang,
-                            "image_name": image_name,
-                            "status": "MANUAL",
-                            "reason": "missing_bbox",
-                        },
-                    )
-                    continue
-                # No zones configured — fall through to full-image OCR
+                        lang,
+                        image_name,
+                        "",
+                        "",
+                        "",
+                        None,
+                        "MANUAL",
+                        0.0,
+                        "missing_bbox",
+                        "{}",
+                        None,
+                        0.0,
+                        None,
+                        None,
+                        0.0,
+                        zone_name,
+                        target_id,
+                    ),
+                )
+                conn.commit()
+                counters["rows_inserted_by_reason"]["missing_bbox"] = counters["rows_inserted_by_reason"].get("missing_bbox", 0) + 1
+                _push_event(
+                    session_id,
+                    {
+                        "event": "item",
+                        "idx": idx,
+                        "lang": lang,
+                        "image_name": image_name,
+                        "status": "MANUAL",
+                        "reason": "missing_bbox",
+                    },
+                )
+                continue
             if idx in crop_required_indices:
                 counters["images_skipped_total"] += 1
                 counters["images_skipped_by_reason"]["crop_required"] = counters["images_skipped_by_reason"].get("crop_required", 0) + 1
@@ -1259,14 +1198,14 @@ async def _process_session(
             )
 
             cropped_image = cropped_images.get(idx)
-            if cropped_image is None and target_zones:
+            if cropped_image is None:
                 raise RuntimeError(f"Crop required but missing for {image_name}")
 
             if idx in en_source_ocr_cache:
                 ocr_results = en_source_ocr_cache[idx]
             elif idx == en_source_idx and en_source_ocr_results is not None:
                 ocr_results = en_source_ocr_results
-            elif cropped_image is not None:
+            else:
                 counters["ocr_dispatch_reached_total"] += 1
                 ocr_results = await asyncio.get_event_loop().run_in_executor(
                     None,
@@ -1274,13 +1213,6 @@ async def _process_session(
                     cropped_image,
                     engines,
                 )
-            else:
-                # Legacy whole-image OCR fallback (run_ocr_multi on the
-                # full image bytes) removed — the contract requires a
-                # per-zone crop. Empty results keep the row in MANUAL
-                # with reason `crop_required` instead of sending the
-                # whole banner to Google.
-                ocr_results = {}
 
             best_engine, best_text, best_conf = _pick_best_text(ocr_results)
 
