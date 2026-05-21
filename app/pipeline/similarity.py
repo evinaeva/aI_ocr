@@ -76,6 +76,26 @@ def build_validation_result(
         ocr_norm = normalize(ocr_text or "", "soft")[:2000]
         exp_norm = normalize(expected_text, "soft")[:2000]
         sim = float(cmp["similarity"])
+
+        match_pass = bool(cmp["pass"])
+        match_mode = cmp["mode"]
+
+        # LLM adjudicator — fires only when rule-based comparator said FAIL
+        # but similarity is in the gray zone. Disabled unless
+        # LLM_ADJUDICATE_ENABLED=true. No escalation to a larger model.
+        from .llm_adjudicator import adjudicate as _llm_adjudicate
+
+        llm = _llm_adjudicate(
+            ocr_text or "",
+            expected_text,
+            lang,
+            sim,
+            match_pass=match_pass,
+        )
+        if llm.called and llm.verdict == "pass":
+            match_pass = True
+            match_mode = "llm_adjudicated"
+
         return {
             "validation_applied": True,
             "skip_reason": None,
@@ -84,10 +104,11 @@ def build_validation_result(
             "normalized_expected": exp_norm,
             "similarity": round(sim, 4),
             "threshold": SIMILARITY_THRESHOLD,
-            "match_pass": bool(cmp["pass"]),
-            "match_mode": cmp["mode"],
+            "match_pass": match_pass,
+            "match_mode": match_mode,
             "lines_ocr": cmp["lines_ocr"],
             "lines_ref": cmp["lines_ref"],
+            "llm_adjudicator": llm.to_dict(),
         }, sim
     except Exception:
         log_event(

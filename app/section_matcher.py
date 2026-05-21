@@ -37,6 +37,13 @@ _HEADER_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Any docx "Heading N" style (N=1..9) marks a section boundary. Previously
+# only "Heading 2" was recognised, which silently broke localisation packs
+# where the translator marked the section name (e.g. "BANNER") with
+# Heading 3 — that paragraph then leaked into the content text and every
+# OCR run got `MANUAL` because the reference began with "BANNER".
+_HEADING_STYLE_RE = re.compile(r"^\s*heading\s*\d+\b", re.IGNORECASE)
+
 _NAME_LEADING_STRIP_RE = re.compile(r"^[\s.․։۔．]+")
 
 # Minimum number of explicit numbered headers a TXT must have before it
@@ -227,7 +234,7 @@ def _parse_sections_from_paragraphs(paragraphs) -> List[Section]:
         if not text:
             continue
 
-        is_heading = "Heading 2" in style_name or "heading 2" in style_name.lower()
+        is_heading = bool(_HEADING_STYLE_RE.match(style_name or ""))
         parsed = _parse_header(text) if not is_heading else None
 
         if is_heading or parsed:
