@@ -529,8 +529,18 @@ async def get_image(session_id: str, filename: str):
             (session_id, basename),
         ).fetchone()
     conn.close()
-    if not row:
-        return Response(status_code=404)
+
+    image_bytes: Optional[bytes] = None
+    if row:
+        image_bytes = bytes(row["data"])
+    else:
+        # Cloud Run cross-instance fallback: a different instance ran
+        # `_process_session` and wrote the image to its local `/tmp` SQLite.
+        # Pull the GCS mirror written by `put_session_image`.
+        from app.pipeline.session_images import get_session_image
+        image_bytes = get_session_image(session_id, filename)
+        if image_bytes is None:
+            return Response(status_code=404)
 
     fname_lower = filename.lower()
     if fname_lower.endswith(".png"):
@@ -543,7 +553,7 @@ async def get_image(session_id: str, filename: str):
         media_type = "image/webp"
     else:
         media_type = "application/octet-stream"
-    return Response(content=bytes(row["data"]), media_type=media_type)
+    return Response(content=image_bytes, media_type=media_type)
 
 
 @app.get("/api/progress/{session_id}")
@@ -1244,6 +1254,14 @@ async def _process_session(
                 (session_id, image_name, image_bytes),
             )
             conn.commit()
+            # Mirror to GCS so thumbnails render on Cloud Run regardless of
+            # which instance serves the `/image/...` request. No-op when
+            # SESSION_IMAGES_GCS_BUCKET is unset (dev / single-instance).
+            try:
+                from app.pipeline.session_images import put_session_image
+                put_session_image(session_id, image_name, image_bytes)
+            except Exception:
+                logger.warning("session_image_mirror_skipped", exc_info=False)
 
             _push_event(
                 session_id,

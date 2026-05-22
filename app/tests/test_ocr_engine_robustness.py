@@ -138,22 +138,23 @@ def test_ocrspace_punctuation_only_treated_as_no_response(monkeypatch, garbage_t
 
 
 @pytest.mark.parametrize(
-    "valid_text",
+    "valid_text,expected",
     [
-        "Hello",
-        "13 июня",
-        "5",   # bare digit still has alnum
-        "A.",
-        "# 5 tokens",  # mixed garbage+content → kept
+        ("Hello", "Hello"),
+        ("13 июня", "13 июня"),
+        ("5", "5"),                     # bare digit still has alnum
+        ("A.", "A."),
+        ("# 5 tokens", "5 tokens"),     # leading `#` stripped (markdown header)
+        ("words # mid", "words # mid"), # mid-line `#` preserved
     ],
 )
-def test_ocrspace_text_with_letters_or_digits_passes(monkeypatch, valid_text):
+def test_ocrspace_text_with_letters_or_digits_passes(monkeypatch, valid_text, expected):
     response = _ocrspace_response(valid_text)
     _patch_httpx_post(monkeypatch, response)
 
     result = ocr._ocr_ocrspace(b"img")
 
-    assert result == (valid_text, None)
+    assert result == (expected, None)
 
 
 def test_ocrspace_garbage_retries_then_recovers(monkeypatch):
