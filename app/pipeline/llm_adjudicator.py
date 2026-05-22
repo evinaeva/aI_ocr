@@ -145,10 +145,13 @@ def adjudicate(
     # UI), the LLM should NOT see those decoration brackets at all: the
     # banner OCR will never include them, but they live in the docx, and
     # the model reliably hallucinates a "phrase diff" out of `[ X ]` vs `X`.
-    # Strip them on both sides before the prompt.
+    # Strip them on both sides before the prompt. We pass `lang` so French
+    # gets the guillemets `« »` preserved (typography signal) — otherwise
+    # `clean_for_display` would fold them to straight `"` and the FR rule
+    # in the prompt wouldn't trigger on the actual character.
     _strip_decorations = lambda s: _DECOR_BRACKETS_RE.sub(" ", s)  # noqa: E731
-    ocr_clean = _strip_decorations(clean_for_display(ocr_text)).lower()
-    ref_clean = _strip_decorations(clean_for_display(expected_text)).lower()
+    ocr_clean = _strip_decorations(clean_for_display(ocr_text, lang=lang)).lower()
+    ref_clean = _strip_decorations(clean_for_display(expected_text, lang=lang)).lower()
 
     # In-session cache: identical (ocr, ref, lang) shouldn't burn a second
     # API call. Common when the same banner appears in multiple sessions
@@ -234,6 +237,17 @@ def _elapsed_ms(t0: float) -> float:
 
 
 def _build_prompt(ocr_text: str, expected_text: str, lang: str) -> str:
+    is_french = (lang or "").lower().startswith("fr")
+    french_rules = (
+        "\n\nFRENCH (`fr`) TYPOGRAPHY EXCEPTION — applies because lang=fr:\n"
+        "  - A space BEFORE `!`, `?`, `:`, `;`, `»` and AFTER `«` is "
+        "MANDATORY in French (Imprimerie nationale rules).\n"
+        "  - `MONDE !` is correct, `MONDE!` is a typography error.\n"
+        "  - `« Bonjour »` is correct, `«Bonjour»` is wrong.\n"
+        "  - Treat absence (or wrong-side presence) of this space as a "
+        "`real_differences` entry with kind=`punct`. Do NOT classify it as "
+        "ocr_noise just because it's whitespace.\n"
+    ) if is_french else ""
     return (
         "You are a localisation QA assistant. An OCR engine read text from a "
         "marketing image; compare its output against the reference text and "
@@ -255,8 +269,9 @@ def _build_prompt(ocr_text: str, expected_text: str, lang: str) -> str:
         "  - any number, currency, percent, or date differs (e.g. `13` vs `1`)\n"
         "  - a word changes meaning (different product, action, translation)\n"
         "  - a whole phrase missing on one side or added on the other\n"
-        "  - more than one stray character (not a single OCR slip)\n\n"
-        f"Language: {lang}\n\n"
+        "  - more than one stray character (not a single OCR slip)\n"
+        + french_rules +
+        f"\nLanguage: {lang}\n\n"
         "OCR output:\n<<<\n"
         f"{ocr_text}\n"
         ">>>\n\n"
