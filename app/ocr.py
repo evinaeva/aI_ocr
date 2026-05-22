@@ -294,6 +294,20 @@ def google_batch_annotate_images(image_bytes_list: list, google_mode: Optional[s
 
 AZURE_MAX_ATTEMPTS = 2  # initial + 1 retry (per operator feedback 2026-05)
 
+# Azure Image Analysis 4.0 sometimes returns markdown-style heading prefixes
+# (`#`, `##`, `###`, `####`) at the start of lines when the source text was
+# rendered visually large (banner headlines). These are layout hints — never
+# real content — but they cause `normalize_for_consensus` to disagree with
+# the other engines on character-level identity, falling back to
+# `no_confidence_fallback` → MANUAL `engines_disagree`. Strip per line.
+import re as _re_az_md
+_AZURE_MARKDOWN_HEADER_RE = _re_az_md.compile(r"^[#]+\s*", _re_az_md.MULTILINE)
+
+
+def _strip_azure_markdown(text: str) -> str:
+    """Remove leading `#`/`##`/... markdown headers per line."""
+    return _AZURE_MARKDOWN_HEADER_RE.sub("", text)
+
 
 def _ocr_azure_once(image_bytes: bytes, endpoint: str, key: str, attempt: int) -> Optional[tuple]:
     """Single Azure attempt. Returns (text, avg_conf) or None on failure or empty response."""
@@ -326,6 +340,7 @@ def _ocr_azure_once(image_bytes: bytes, endpoint: str, key: str, attempt: int) -
             logger.info("Azure OCR empty response (attempt %d)", attempt)
             return None
         text = "\n".join(lines_text).strip()
+        text = _strip_azure_markdown(text)
         avg_conf = sum(confidences) / len(confidences) if confidences else None
         return (text, avg_conf)
     except Exception as exc:
