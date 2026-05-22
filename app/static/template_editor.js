@@ -890,8 +890,25 @@
   }
 
   function diffOcrVsRefCore(a, b, caseInsensitive) {
-    const aCmp = caseInsensitive ? a.toLowerCase() : a;
-    const bCmp = caseInsensitive ? b.toLowerCase() : b;
+    // Treat any whitespace run (spaces, newlines, tabs) as a single ` ` for
+    // the LCS comparison — engine line-break differences and trailing
+    // spaces should NOT show up as red/yellow marks in the cells. We
+    // walk the normalised strings when emitting HTML, so the cells render
+    // flowing text on one line, which is fine for the operator diff view.
+    // Per-language exception (fr) preserves the space-before-punct signal:
+    // the strict normaliser already flagged that case at the verdict
+    // level, but here in the visual diff we let the FR signal show through
+    // by NOT collapsing the space before `! ? : ; »`.
+    const flatten = (s) => {
+      // Preserve `<space><french-punct>` runs as-is; collapse everything else.
+      return String(s)
+        .replace(/[ \t\n\r\f\v]+([!?:;»])/g, ' $1')   // preserve fr space-before
+        .replace(/[ \t\n\r\f\v]+/g, ' ');             // collapse other whitespace
+    };
+    const aFlat = flatten(a);
+    const bFlat = flatten(b);
+    const aCmp = caseInsensitive ? aFlat.toLowerCase() : aFlat;
+    const bCmp = caseInsensitive ? bFlat.toLowerCase() : bFlat;
     const ops = charDiff(aCmp, bCmp);
 
     const ocrLines = [];

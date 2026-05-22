@@ -294,19 +294,22 @@ def google_batch_annotate_images(image_bytes_list: list, google_mode: Optional[s
 
 AZURE_MAX_ATTEMPTS = 2  # initial + 1 retry (per operator feedback 2026-05)
 
-# Azure Image Analysis 4.0 sometimes returns markdown-style heading prefixes
-# (`#`, `##`, `###`, `####`) at the start of lines when the source text was
-# rendered visually large (banner headlines). These are layout hints — never
-# real content — but they cause `normalize_for_consensus` to disagree with
-# the other engines on character-level identity, falling back to
-# `no_confidence_fallback` → MANUAL `engines_disagree`. Strip per line.
-import re as _re_az_md
-_AZURE_MARKDOWN_HEADER_RE = _re_az_md.compile(r"^[#]+\s*", _re_az_md.MULTILINE)
+# Markdown-style heading prefixes (`#`, `##`, `###`, `####`) at line start
+# show up in both Azure (Image Analysis 4.0 layout hints on visually-large
+# banner text) AND OCR.Space (post-PR-#82 the operator confirmed via
+# screenshot that the offender column was actually OCR.Space, not Azure).
+# Strip per engine adapter — they're never real content.
+import re as _re_md_hdr
+_MARKDOWN_HEADER_RE = _re_md_hdr.compile(r"^[#]+\s*", _re_md_hdr.MULTILINE)
 
 
-def _strip_azure_markdown(text: str) -> str:
+def _strip_markdown_headers(text: str) -> str:
     """Remove leading `#`/`##`/... markdown headers per line."""
-    return _AZURE_MARKDOWN_HEADER_RE.sub("", text)
+    return _MARKDOWN_HEADER_RE.sub("", text)
+
+
+# Backwards-compatible alias — older tests reference `_strip_azure_markdown`.
+_strip_azure_markdown = _strip_markdown_headers
 
 
 def _ocr_azure_once(image_bytes: bytes, endpoint: str, key: str, attempt: int) -> Optional[tuple]:
@@ -340,8 +343,20 @@ def _ocr_azure_once(image_bytes: bytes, endpoint: str, key: str, attempt: int) -
             logger.info("Azure OCR empty response (attempt %d)", attempt)
             return None
         text = "\n".join(lines_text).strip()
-        text = _strip_azure_markdown(text)
+        text = _strip_markdown_headers(text)
         avg_conf = sum(confidences) / len(confidences) if confidences else None
+        # Visibility for operator-reported "Azure sometimes returns one
+        # phrase, sometimes everything". Flag suspiciously partial answers
+        # (very few words / very low confidence) so they're searchable in
+        # Cloud Run logs. We still return the text — consensus + LLM judge
+        # downstream decide what to do with it.
+        word_count = len(text.split())
+        if word_count <= 3 or (avg_conf is not None and avg_conf < 0.4):
+            logger.warning(
+                "azure_partial_response attempt=%d words=%d avg_conf=%s text=%r",
+                attempt, word_count, f"{avg_conf:.3f}" if avg_conf else "n/a",
+                text[:80],
+            )
         return (text, avg_conf)
     except Exception as exc:
         logger.warning("Azure OCR exception (attempt %d): %s", attempt, exc)
@@ -403,6 +418,11 @@ def _ocr_ocrspace_once(api_key, mime, img_b64, attempt):
         text = parsed[0].get("ParsedText", "").strip()
         if not text:
             return None
+        # Strip OCR.Space's markdown-style heading prefixes (`#`, `##`, ...)
+        # at line starts — newer engine versions emit them on banner-sized
+        # text. The hashes are layout hints, never real content, and cause
+        # consensus disagreement with Google's plain output.
+        text = _strip_markdown_headers(text)
         # OCR.Space sometimes returns punctuation-only garbage on tight crops
         # (e.g. long runs of `#` or `.`) that wins consensus by length and
         # poisons downstream comparison. Treat any response without a single
