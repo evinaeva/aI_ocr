@@ -1355,3 +1355,15 @@ input[type='file'], select, textarea, .text-input, input[type='text'], input[typ
     grid-column: 1 / -1;
   }
 }
+
+/* LLM judge banner — shows per-iteration call count + cost above the results table. */
+.session-llm-banner {
+  display: inline-block;
+  margin: 6px 0 10px;
+  padding: 6px 12px;
+  background: #eef5ff;
+  border: 1px solid #b6d4fe;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  color: #1e3a8a;
+}

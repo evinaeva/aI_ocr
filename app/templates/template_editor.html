@@ -27,6 +27,7 @@
           <tr><th>Google Vision</th><td id="engine-usage-google">…</td></tr>
           <tr><th>Azure</th><td id="engine-usage-azure">…</td></tr>
           <tr><th>ocr.space</th><td id="engine-usage-ocrspace">…</td></tr>
+          <tr><th>LLM judge</th><td id="engine-usage-llm">…</td></tr>
         </table>
       </aside>
     </div>
@@ -125,6 +126,7 @@
     <label><input type="checkbox" id="hide-pass"> Hide PASS</label>
     <button class="btn btn-primary" id="btn-finish-bottom" disabled>показать косяки дизайнера</button>
   </div>
+  <div id="session-llm-banner" class="session-llm-banner" style="display:none;"></div>
   <table class="results-table"><thead><tr><th>img</th><th>gv</th><th>azure</th><th>ocr.space</th><th id="reference-header">Reference</th><th>status</th><th>review</th></tr></thead><tbody id="results-body"></tbody></table>
   <div class="results-pagination" id="results-pagination"></div>
 </section>

@@ -33,6 +33,7 @@ from fastapi.templating import Jinja2Templates
 
 from .logging_utils import log_event
 from .metrics.engine_usage import get_current_month_usage, init_engine_usage_metrics
+from .metrics.llm_usage import get_current_month_llm_usage, init_llm_usage_metrics
 from .normalizer import clean_for_display, normalize_strict
 from .ocr import (
     ALL_ENGINES,
@@ -164,6 +165,7 @@ async def lifespan(app: FastAPI):
     # B6: emit Azure env var warnings once at startup
     emit_startup_warnings()
     init_engine_usage_metrics()
+    init_llm_usage_metrics()
     log_event("app_start", app_version=APP_VERSION)
     yield
 
@@ -503,6 +505,11 @@ async def log_editor_load(request: Request):
 @app.get("/api/metrics/engine-usage/current_month")
 async def api_engine_usage_current_month():
     return JSONResponse(get_current_month_usage())
+
+
+@app.get("/api/metrics/llm-usage/current_month")
+async def api_llm_usage_current_month():
+    return JSONResponse(get_current_month_llm_usage())
 
 
 @app.get("/image/{session_id}/{filename:path}")
@@ -982,6 +989,15 @@ async def _process_session(
         # Collect per-image OCR and localized ref for post-loop aggregated comparison.
         image_ocr_accumulator: Dict[str, List[str]] = {}
         image_localized_ref: Dict[str, str] = {}
+        # Raw (unnormalized) ref + lang per image — needed so the LLM judge
+        # can see the actual texts (with diacritics, original punctuation)
+        # rather than the strict-normalized form.
+        image_localized_ref_raw: Dict[str, str] = {}
+        image_lang: Dict[str, str] = {}
+        # Per-session LLM judge accumulator (for session_meta_json / UI).
+        llm_calls_total = 0
+        llm_cost_usd_total = 0.0
+        llm_flipped_to_pass = 0
 
         for idx, item in enumerate(queue_items):
             lang = item.lang or "und"
@@ -1340,9 +1356,12 @@ async def _process_session(
 
                         # Accumulate OCR texts and localized ref for post-loop aggregated comparison.
                         if image_name not in image_localized_ref:
-                            loc_ref_n = normalize_strict(_section_content(localized_reference))
+                            loc_ref_raw = _section_content(localized_reference)
+                            loc_ref_n = normalize_strict(loc_ref_raw)
                             if loc_ref_n:
                                 image_localized_ref[image_name] = loc_ref_n
+                                image_localized_ref_raw[image_name] = loc_ref_raw
+                                image_lang[image_name] = lang or "und"
 
                 logger.info("lang=%s status=%s reason=%s section=%s", lang, status, reason, section_name_found)
 
@@ -1409,15 +1428,48 @@ async def _process_session(
 
         # Post-loop: re-evaluate each image status using aggregated OCR vs localized ref.
         # This correctly handles multi-zone images (same as frontend groupResultsBySourceImage).
+        from app.normalizer import _levenshtein_similarity
+        from app.pipeline.llm_adjudicator import adjudicate as _llm_adjudicate
+
         for img_name, ocr_texts in image_ocr_accumulator.items():
             ref_norm = image_localized_ref.get(img_name)
             if not ref_norm:
                 continue
-            agg_norm = normalize_strict("\n".join(ocr_texts))
+            agg_raw = "\n".join(ocr_texts)
+            agg_norm = normalize_strict(agg_raw)
             if not agg_norm:
                 continue
-            new_status = "PASS" if agg_norm == ref_norm else "MANUAL"
-            new_reason = "strict_equal" if new_status == "PASS" else "localized_mismatch"
+            rule_pass = (agg_norm == ref_norm)
+
+            if rule_pass:
+                new_status = "PASS"
+                new_reason = "strict_equal"
+            else:
+                # Rule says MANUAL — give the LLM judge a shot at the gray
+                # zone (only fires when similarity is in [SIM_MIN, SIM_MAX];
+                # outside that window the rule verdict stands).
+                sim = _levenshtein_similarity(agg_norm[:2000], ref_norm[:2000])
+                ref_raw = image_localized_ref_raw.get(img_name, "")
+                lang_for_llm = image_lang.get(img_name, "und")
+                llm = _llm_adjudicate(
+                    agg_raw, ref_raw, lang_for_llm, sim,
+                    match_pass=False,
+                )
+                if llm.called:
+                    llm_calls_total += 1
+                    if llm.cost_usd:
+                        llm_cost_usd_total += float(llm.cost_usd)
+                if llm.called and llm.verdict == "pass":
+                    new_status = "PASS"
+                    new_reason = "llm_adjudicated"
+                    llm_flipped_to_pass += 1
+                elif llm.called and llm.verdict == "fail":
+                    new_status = "MANUAL"
+                    new_reason = "llm_rejected"
+                else:
+                    new_status = "MANUAL"
+                    new_reason = "localized_mismatch"
+
             conn.execute(
                 """UPDATE results SET status=?, reason=?
                    WHERE session_id=? AND image_name=?
@@ -1452,6 +1504,10 @@ async def _process_session(
             "reference_section_name": (selected_reference.name if selected_reference else None),
             "reference_text_lang": reference_lang,
             "reference_text_name": reference_text_name,
+            # LLM judge stats for this session (consumed by the UI banner).
+            "llm_calls_total": llm_calls_total,
+            "llm_cost_usd_total": round(llm_cost_usd_total, 6),
+            "llm_flipped_to_pass": llm_flipped_to_pass,
         }
 
         conn.execute(

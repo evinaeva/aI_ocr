@@ -112,6 +112,7 @@
   });
 
   loadEngineUsageWidget();
+  loadLlmUsageWidget();
 
   async function loadEngineUsageWidget() {
     const monthEl = $('engine-usage-month');
@@ -131,6 +132,27 @@
       $('engine-usage-google').textContent = 'n/a';
       $('engine-usage-azure').textContent = 'n/a';
       $('engine-usage-ocrspace').textContent = 'n/a';
+    }
+  }
+
+  async function loadLlmUsageWidget() {
+    const cell = $('engine-usage-llm');
+    if (!cell) return;
+    try {
+      const resp = await fetch('/api/metrics/llm-usage/current_month');
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      const available = Boolean(data.available);
+      if (available && data.llm_calls != null) {
+        const calls = Number(data.llm_calls) || 0;
+        const cost = Number(data.llm_cost_usd) || 0;
+        // "12 / $0.04" — count first, total monthly cost in USD second
+        cell.textContent = `${calls} / $${cost.toFixed(4)}`;
+      } else {
+        cell.textContent = available ? '0 / $0.00' : 'n/a';
+      }
+    } catch (_) {
+      cell.textContent = 'n/a';
     }
   }
 
@@ -1022,11 +1044,33 @@
     }
   }
 
+  function renderSessionLlmBanner() {
+    const banner = $('session-llm-banner');
+    if (!banner) return;
+    const meta = (state.currentSessionMeta && state.currentSessionMeta.meta) || {};
+    const calls = Number(meta.llm_calls_total) || 0;
+    const cost = Number(meta.llm_cost_usd_total) || 0;
+    const flipped = Number(meta.llm_flipped_to_pass) || 0;
+    if (calls <= 0) {
+      // No LLM activity this iteration — keep the banner hidden so the
+      // operator immediately sees when the judge actually fired.
+      banner.style.display = 'none';
+      banner.textContent = '';
+      return;
+    }
+    const costStr = '$' + cost.toFixed(4);
+    banner.style.display = 'block';
+    banner.textContent =
+      `LLM judge: ${calls} call${calls === 1 ? '' : 's'} this iteration` +
+      ` (cost ${costStr}, ${flipped} flipped to PASS)`;
+  }
+
   function renderResultsTable() {
     const tbody = $('results-body');
     const pagination = $('results-pagination');
     tbody.innerHTML = '';
     pagination.innerHTML = '';
+    renderSessionLlmBanner();
     const hidePass = $('hide-pass').checked;
     const grouped = groupResultsBySourceImage(state.currentResults);
     const visibleRows = hidePass ? grouped.filter((r) => r.status !== 'PASS') : grouped;
