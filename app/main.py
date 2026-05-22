@@ -806,6 +806,34 @@ def _prefetch_google_for_zip_items(
 _VALID_ENGINES = set(ALL_ENGINES)
 
 
+def _build_manual_detail(reason: str, translator_outlier, llm, lang: str) -> Optional[str]:
+    """Render a human-readable tooltip for a MANUAL row.
+
+    Called once per image in `_process_session`'s post-loop. Pulls the
+    most informative diff for the chosen `reason`. Returns None when the
+    reason has no extra detail to add.
+    """
+    if reason == "translator_outlier" and translator_outlier is not None:
+        return translator_outlier.tooltip(lang)
+    if reason == "engines_disagree":
+        return "OCR engines disagreed on the text — none of the engine outputs matched each other after normalisation."
+    if reason == "llm_rejected" and llm is not None and llm.real_differences:
+        parts = []
+        for d in llm.real_differences[:3]:
+            kind = d.get("kind") or "diff"
+            ocr_val = d.get("ocr") or "(empty)"
+            ref_val = d.get("ref") or "(empty)"
+            parts.append(f"{kind}: OCR '{ocr_val}' vs reference '{ref_val}'")
+        prefix = "LLM flagged real differences: "
+        suffix = ""
+        if len(llm.real_differences) > 3:
+            suffix = f" (+{len(llm.real_differences) - 3} more)"
+        return prefix + "; ".join(parts) + suffix
+    if reason == "localized_mismatch":
+        return "Banner OCR doesn't match the reference text and the LLM judge couldn't classify the diff."
+    return None
+
+
 async def _process_session(
     session_id: str,
     zip_bytes: bytes,
@@ -912,16 +940,17 @@ async def _process_session(
             raw_conf = res.get("confidence") if isinstance(res, dict) else getattr(res, "confidence", None)
             return float(raw_conf) if isinstance(raw_conf, (int, float)) else None
 
-        def _pick_best_text(results: Dict[str, object]) -> tuple[Optional[str], str, float]:
+        def _pick_best_text(results: Dict[str, object]) -> tuple[Optional[str], str, float, bool]:
             """Adapter around `resolve_consensus`.
 
-            The picker logic (majority of N, deterministic fallback,
-            confidence rules) lives in app.pipeline.consensus — this
-            wrapper just translates the legacy {engine: OCRResult}
-            dict into the ZoneEngineResult list that the canonical
-            resolver expects, and unwraps the result back into the
-            (engine, text, conf) tuple this module's call sites still
-            use.
+            Returns `(engine, text, confidence, engines_disagree)`. The
+            4th tuple element is True when 2+ engines returned valid
+            text but none of their consensus-normalised outputs matched,
+            i.e. `rule_used == 'no_confidence_fallback'`. Callers use
+            that flag to bypass the LLM judge and route straight to
+            MANUAL — when OCR engines can't agree, asking an LLM to
+            mediate adds cost without adding signal, and the operator
+            rule is "false MANUAL > false PASS".
             """
             from app.pipeline.consensus import resolve_consensus
             from app.pipeline.ocr_dispatcher import ZoneEngineResult
@@ -941,12 +970,16 @@ async def _process_session(
                 ))
 
             if not engine_results:
-                return None, "", -1.0
+                return None, "", -1.0, False
 
             out = resolve_consensus(engine_results, engines_configured=True)
             selected_engine = out.get("selected_engine")
             selected_text = out.get("selected_text") or ""
-            return selected_engine, selected_text, -1.0
+            engines_disagree = (
+                out.get("rule_used") == "no_confidence_fallback"
+                and len(engine_results) >= 2
+            )
+            return selected_engine, selected_text, -1.0, engines_disagree
 
         if en_source_image_name is not None:
             try:
@@ -969,7 +1002,7 @@ async def _process_session(
                         zone_texts = []
                         for zi in en_source_zone_indices:
                             if zi in en_source_ocr_cache:
-                                _, zt, _ = _pick_best_text(en_source_ocr_cache[zi])
+                                _, zt, _, _ = _pick_best_text(en_source_ocr_cache[zi])
                                 if zt:
                                     zone_texts.append(zt)
                         en_source_best_text = "\n".join(zone_texts)
@@ -994,6 +1027,16 @@ async def _process_session(
         # rather than the strict-normalized form.
         image_localized_ref_raw: Dict[str, str] = {}
         image_lang: Dict[str, str] = {}
+        # EN-anchor translator-outlier cache: image_name -> TranslatorOutlier|None.
+        # Computed once per image when we first see the localised reference;
+        # consumed in the post-loop to add `translator_outlier` info to MANUAL
+        # rows regardless of whether the rule comparator flagged them.
+        image_translator_outlier: Dict[str, Any] = {}
+        # `True` if any zone of this image had `engines_disagree` (consensus
+        # used `no_confidence_fallback`). Bypasses the LLM judge in post-loop
+        # and routes straight to MANUAL — when OCR engines can't agree, the
+        # selected text is unreliable and the LLM has nothing to mediate.
+        image_engines_disagree: Dict[str, bool] = {}
         # Per-session LLM judge accumulator (for session_meta_json / UI).
         llm_calls_total = 0
         llm_cost_usd_total = 0.0
@@ -1230,7 +1273,9 @@ async def _process_session(
                     engines,
                 )
 
-            best_engine, best_text, best_conf = _pick_best_text(ocr_results)
+            best_engine, best_text, best_conf, engines_disagree = _pick_best_text(ocr_results)
+            if engines_disagree:
+                image_engines_disagree[image_name] = True
 
             ocr_results_display = {eng: clean_for_display(_res_text(res)) for eng, res in ocr_results.items()}
 
@@ -1363,6 +1408,17 @@ async def _process_session(
                                 image_localized_ref_raw[image_name] = loc_ref_raw
                                 image_lang[image_name] = lang or "und"
 
+                                # EN-anchor: compare lang docx numbers against the
+                                # EN reference section. Done once per image (the
+                                # localised section text is identical across the
+                                # zones of the same image).
+                                if selected_reference is not None and lang != "en":
+                                    from app.pipeline.translator_check import find_translator_outliers
+                                    en_ref_raw = _section_content(selected_reference)
+                                    image_translator_outlier[image_name] = find_translator_outliers(
+                                        en_ref_raw, loc_ref_raw,
+                                    )
+
                 logger.info("lang=%s status=%s reason=%s section=%s", lang, status, reason, section_name_found)
 
             counters["images_processed_total"] += 1
@@ -1431,6 +1487,15 @@ async def _process_session(
         from app.normalizer import _levenshtein_similarity
         from app.pipeline.llm_adjudicator import adjudicate as _llm_adjudicate
 
+        translator_outlier_count = 0
+        # In-session LLM cache: hash(ocr+ref+lang) -> LLMVerdict.
+        # Avoids re-billing for identical pairs in the same session.
+        llm_cache: Dict[str, Any] = {}
+        # Detailed per-image MANUAL reason for the UI tooltip — populated
+        # alongside the row's `reason` code. Stored in `session_meta_json`
+        # under `manual_reasons` so the frontend can show it on hover.
+        manual_reason_details: Dict[str, str] = {}
+
         for img_name, ocr_texts in image_ocr_accumulator.items():
             ref_norm = image_localized_ref.get(img_name)
             if not ref_norm:
@@ -1439,11 +1504,42 @@ async def _process_session(
             agg_norm = normalize_strict(agg_raw)
             if not agg_norm:
                 continue
+
+            translator_outlier = image_translator_outlier.get(img_name)
+            has_translator_outlier = (
+                translator_outlier is not None and translator_outlier.has_mismatch
+            )
+            has_engines_disagree = image_engines_disagree.get(img_name, False)
+
             rule_pass = (agg_norm == ref_norm)
 
-            if rule_pass:
+            llm_for_detail = None  # used by _build_manual_detail below
+
+            if has_engines_disagree:
+                # OCR engines couldn't agree on the text for at least one
+                # zone of this image. The "best_text" the consensus picked
+                # is unreliable — don't waste an LLM call mediating between
+                # noisy OCR outputs. Straight to MANUAL.
+                new_status = "MANUAL"
+                new_reason = (
+                    "translator_outlier" if has_translator_outlier else "engines_disagree"
+                )
+                if has_translator_outlier:
+                    translator_outlier_count += 1
+            elif rule_pass and not has_translator_outlier:
+                # Clean PASS — banner and lang docx match, and lang docx
+                # agrees with EN on all numeric facts.
                 new_status = "PASS"
                 new_reason = "strict_equal"
+            elif rule_pass and has_translator_outlier:
+                # Banner == lang docx, but lang docx disagrees with EN on a
+                # numeric fact. Per the operator's rule "false MANUAL >
+                # false PASS", flag this so the operator can review the
+                # translator's text — even though the banner+docx pair is
+                # internally consistent.
+                new_status = "MANUAL"
+                new_reason = "translator_outlier"
+                translator_outlier_count += 1
             else:
                 # Rule says MANUAL — give the LLM judge a shot at the gray
                 # zone (only fires when similarity is in [SIM_MIN, SIM_MAX];
@@ -1454,21 +1550,51 @@ async def _process_session(
                 llm = _llm_adjudicate(
                     agg_raw, ref_raw, lang_for_llm, sim,
                     match_pass=False,
+                    cache=llm_cache,
                 )
-                if llm.called:
+                llm_for_detail = llm
+                if llm.called and not llm.from_cache:
                     llm_calls_total += 1
                     if llm.cost_usd:
                         llm_cost_usd_total += float(llm.cost_usd)
-                if llm.called and llm.verdict == "pass":
+                if llm.called and llm.verdict == "pass" and not has_translator_outlier:
+                    # LLM says equivalent and translator agrees with EN.
                     new_status = "PASS"
                     new_reason = "llm_adjudicated"
                     llm_flipped_to_pass += 1
+                elif llm.called and llm.verdict == "pass" and has_translator_outlier:
+                    # LLM thinks banner ≈ lang docx semantically, but lang
+                    # docx still has a translator numeric outlier vs EN.
+                    # Surface the outlier for review.
+                    new_status = "MANUAL"
+                    new_reason = "translator_outlier"
+                    translator_outlier_count += 1
                 elif llm.called and llm.verdict == "fail":
                     new_status = "MANUAL"
-                    new_reason = "llm_rejected"
+                    new_reason = (
+                        "translator_outlier" if has_translator_outlier else "llm_rejected"
+                    )
+                    if has_translator_outlier:
+                        translator_outlier_count += 1
                 else:
                     new_status = "MANUAL"
-                    new_reason = "localized_mismatch"
+                    new_reason = (
+                        "translator_outlier" if has_translator_outlier else "localized_mismatch"
+                    )
+                    if has_translator_outlier:
+                        translator_outlier_count += 1
+
+            # Build a human-readable detail string for the UI tooltip
+            # whenever the row becomes MANUAL.
+            if new_status == "MANUAL":
+                detail = _build_manual_detail(
+                    new_reason,
+                    translator_outlier,
+                    llm_for_detail,
+                    image_lang.get(img_name, "und"),
+                )
+                if detail:
+                    manual_reason_details[img_name] = detail
 
             conn.execute(
                 """UPDATE results SET status=?, reason=?
@@ -1508,6 +1634,15 @@ async def _process_session(
             "llm_calls_total": llm_calls_total,
             "llm_cost_usd_total": round(llm_cost_usd_total, 6),
             "llm_flipped_to_pass": llm_flipped_to_pass,
+            # EN-anchor stats — translator outliers caught by the
+            # deterministic numeric-fact check (no LLM cost involved).
+            "translator_outlier_count": translator_outlier_count,
+            # Engines disagreement count — images where the consensus
+            # fell back to no_confidence_fallback on at least one zone.
+            "engines_disagree_count": sum(1 for v in image_engines_disagree.values() if v),
+            # Per-image tooltip text for MANUAL rows. Keyed by archive_path.
+            # The frontend renders these on hover over the status badge.
+            "manual_reasons": manual_reason_details,
         }
 
         conn.execute(

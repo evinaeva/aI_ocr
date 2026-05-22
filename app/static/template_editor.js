@@ -1273,6 +1273,13 @@
     const validationReason = row.validation?.reason || row.validation_reason || '';
     const consensusReason = row.consensus?.reason || row.consensus_reason || row.reason || '';
     if (status === 'PASS') return consensusReason || 'All engines matched';
+    // Per-image detailed tooltip injected by the backend
+    // (`session.meta.manual_reasons[image_name]`). Falls back to the
+    // short reason code when the detailed string isn't available.
+    const sessionMeta = state.currentSessionMeta?.meta || {};
+    const details = sessionMeta.manual_reasons || {};
+    const detail = details[row.image_name];
+    if (detail) return detail;
     return validationReason || consensusReason || 'Manual review required';
   }
 

@@ -165,11 +165,18 @@ def test_adjudicate_fail_verdict(monkeypatch):
     monkeypatch.setenv("LLM_ADJUDICATE_ENABLED", "true")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     _patch_httpx(monkeypatch, _mock_openrouter_response(
-        json.dumps({"verdict": "fail", "reason": "number differs: 500 vs 50"})
+        json.dumps({
+            "verdict": "fail",
+            "reason": "number differs: 500 vs 50",
+            "real_differences": [{"ocr": "50", "ref": "500", "kind": "number"}],
+            "ocr_noise": [],
+        })
     ))
-    v = adjudicate("Win 500 tokens", "Win 50 tokens", "en", 0.88, match_pass=False)
+    v = adjudicate("Win 50 tokens", "Win 500 tokens", "en", 0.88, match_pass=False)
     assert v.called is True
     assert v.verdict == "fail"
+    assert v.real_differences == [{"ocr": "50", "ref": "500", "kind": "number"}]
+    assert v.ocr_noise == []
     assert "500" in v.reason
 
 
@@ -183,15 +190,24 @@ def test_adjudicate_malformed_json(monkeypatch):
     assert v.error == "bad_response"
 
 
-def test_adjudicate_unknown_verdict_value(monkeypatch):
+def test_adjudicate_verdict_derived_from_real_differences(monkeypatch):
+    """The model's `verdict` field is ignored — verdict is derived from
+    `real_differences` so the model can't contradict itself."""
     monkeypatch.setenv("LLM_ADJUDICATE_ENABLED", "true")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    # Model says 'pass' but lists a real number diff → we override to fail.
     _patch_httpx(monkeypatch, _mock_openrouter_response(
-        json.dumps({"verdict": "maybe", "reason": "unsure"})
+        json.dumps({
+            "verdict": "pass",  # contradicted by real_differences below
+            "reason": "ignored",
+            "real_differences": [{"ocr": "1", "ref": "13", "kind": "number"}],
+            "ocr_noise": [],
+        })
     ))
     v = adjudicate("a", "b", "en", 0.85, match_pass=False)
     assert v.called is True
-    assert v.error == "bad_response"
+    assert v.verdict == "fail"  # derived, not from model's "pass"
+    assert v.real_differences[0]["kind"] == "number"
 
 
 def test_adjudicate_http_error_returns_error_code(monkeypatch):
@@ -307,7 +323,12 @@ def test_build_validation_result_llm_fail_keeps_manual(monkeypatch):
     monkeypatch.setenv("LLM_ADJUDICATE_ENABLED", "true")
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
     _patch_httpx(monkeypatch, _mock_openrouter_response(
-        json.dumps({"verdict": "fail", "reason": "different number"})
+        json.dumps({
+            "verdict": "fail",
+            "reason": "different number",
+            "real_differences": [{"ocr": "50", "ref": "500", "kind": "number"}],
+            "ocr_noise": [],
+        })
     ))
 
     from app.pipeline.similarity import build_validation_result
