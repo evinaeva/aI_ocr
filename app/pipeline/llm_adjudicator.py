@@ -43,6 +43,7 @@ class LLMVerdict:
     error: Optional[str]        # short error code if call failed
     latency_ms: Optional[float]
     model: Optional[str] = None
+    cost_usd: Optional[float] = None    # per-call cost reported by OpenRouter
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -142,12 +143,22 @@ def adjudicate(
                           latency_ms=_elapsed_ms(t0), model=model)
 
     parsed = _parse_response(data)
+    cost_usd = _extract_cost(data)
     if parsed is None:
         return LLMVerdict(called=True, verdict=None, reason=None, error="bad_response",
-                          latency_ms=_elapsed_ms(t0), model=model)
+                          latency_ms=_elapsed_ms(t0), model=model, cost_usd=cost_usd)
     verdict, reason = parsed
+
+    # Fire-and-forget: bump the monthly LLM-judge usage counter. Never
+    # block the verdict on a Firestore hiccup.
+    try:
+        from app.metrics.llm_usage import increment_llm_usage
+        increment_llm_usage(cost_usd or 0.0, delta=1)
+    except Exception as exc:
+        logger.warning("llm_usage_increment_skipped type=%s", type(exc).__name__)
+
     return LLMVerdict(called=True, verdict=verdict, reason=reason, error=None,
-                      latency_ms=_elapsed_ms(t0), model=model)
+                      latency_ms=_elapsed_ms(t0), model=model, cost_usd=cost_usd)
 
 
 def _elapsed_ms(t0: float) -> float:
@@ -212,6 +223,23 @@ def _extract_json_object(content: str) -> Optional[dict]:
         if isinstance(obj, dict):
             return obj
     return None
+
+
+def _extract_cost(data: dict) -> Optional[float]:
+    """Pull per-call USD cost from the OpenRouter response if present.
+
+    OpenRouter reports `usage.cost` as a float in dollars. Robust to a
+    missing field or unexpected type — returns None when it can't be parsed.
+    """
+    try:
+        usage = data.get("usage") or {}
+        raw = usage.get("cost")
+        if raw is None:
+            return None
+        cost = float(raw)
+        return cost if cost >= 0 else None
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _parse_response(data: dict) -> Optional[Tuple[str, str]]:
