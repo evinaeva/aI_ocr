@@ -1496,12 +1496,21 @@ async def _process_session(
         # under `manual_reasons` so the frontend can show it on hover.
         manual_reason_details: Dict[str, str] = {}
 
+        from app.normalizer import normalize as _normalize
+
         for img_name, ocr_texts in image_ocr_accumulator.items():
-            ref_norm = image_localized_ref.get(img_name)
+            ref_raw = image_localized_ref_raw.get(img_name)
+            if not ref_raw:
+                continue
+            # Per-image lang governs the normalisation rules — most languages
+            # use the default strict policy; French preserves spacing around
+            # `!?:;»` and the guillemets `«»` (typography is mandatory in fr).
+            lang_for_norm = image_lang.get(img_name, "und")
+            ref_norm = _normalize(ref_raw, level="strict", lang=lang_for_norm)
             if not ref_norm:
                 continue
             agg_raw = "\n".join(ocr_texts)
-            agg_norm = normalize_strict(agg_raw)
+            agg_norm = _normalize(agg_raw, level="strict", lang=lang_for_norm)
             if not agg_norm:
                 continue
 

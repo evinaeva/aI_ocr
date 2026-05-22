@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import List
+from typing import List, Optional
 
 # ── Placeholder whitelist ───────────────────────────────────────
 # Only these known variable names are treated as placeholders.
@@ -68,6 +68,19 @@ _BRAND_REMOVE_RE = re.compile(r"\bbongacams\b", re.IGNORECASE)
 # `%bonus_amount%`) are matched and removed BEFORE this strip runs at
 # `soft` level, so they still vanish correctly.
 _STRIP_STRICT_RE = re.compile(r'[^\w\s!?".,$%&]', re.UNICODE)
+
+# French typography (Imprimerie nationale / Académie française):
+#   - A space is mandatory BEFORE: `:`, `;`, `!`, `?`, `»`, `%`
+#   - A space is mandatory AFTER: `«`
+# So `MONDE !` is correct and `MONDE!` is wrong in French, while in English
+# the opposite holds. To make `compare_lines(lang='fr')` space-sensitive
+# around French punctuation, we widen the strict-keep set to include the
+# extra characters `: ; « »` (the regular `!?` are already kept) — and we
+# convert any non-breaking / thin-space variants to a regular space in
+# `_pre_clean` so the operator's typography signal is preserved through
+# normalization. Net effect: `MONDE !` → `monde !` and `MONDE!` → `monde!`
+# stay distinct under `normalize(level=..., lang='fr')`.
+_STRIP_STRICT_FR_RE = re.compile(r'[^\w\s!?".,$%&:;«»]', re.UNICODE)
 
 # consensus: byte-equivalent to old normalize_for_consensus.
 # Strips this fixed ASCII set; preserves backtick, %, <, >, [, ].
@@ -110,8 +123,12 @@ def _collapse_whitespace(text: str) -> str:
     return " ".join(text.split())
 
 
-def _pre_clean(text: str) -> str:
-    """Remove emoji, arrows/bullets, BiDi marks; normalise dashes/spaces/quotes."""
+def _pre_clean(text: str, lang: Optional[str] = None) -> str:
+    """Remove emoji, arrows/bullets, BiDi marks; normalise dashes/spaces/quotes.
+
+    `lang='fr'` preserves the French guillemets `« »` so French QA can see
+    them as typography signal. Other quote variants are folded as usual.
+    """
     text = re.sub(
         "[\U0001F000-\U0001FFFF\U00002600-\U000027BF\U00002B00-\U00002BFF︀-️]",
         "", text,
@@ -125,7 +142,8 @@ def _pre_clean(text: str) -> str:
     text = re.sub(r"[–—―‒‑]", "-", text)
     text = text.replace("“", '"').replace("”", '"')
     text = text.replace("‘", "'").replace("’", "'")
-    text = text.replace("«", '"').replace("»", '"')
+    if (lang or "").lower() != "fr":
+        text = text.replace("«", '"').replace("»", '"')
     text = text.replace("‹", "'").replace("›", "'")
     text = text.replace("­", "")
     text = re.sub(r"[​‌‍﻿]", "", text)
@@ -137,10 +155,17 @@ def remove_brand_names(text: str) -> str:
     return _BRAND_REMOVE_RE.sub("", text)
 
 
-def normalize(text: str, level: str = "strict") -> str:
+def normalize(text: str, level: str = "strict", lang: Optional[str] = None) -> str:
     """Canonical character-level normalization at one of three levels.
 
     Returns "" for empty/None input. See module docstring for level semantics.
+
+    `lang` (optional) toggles per-language exceptions. Currently only `fr` is
+    special: French typography requires a space before `! ? : ; »` and after
+    `«`. To preserve this signal through normalisation we widen the strict
+    `keep`-set for French so `:`, `;`, `«`, `»` survive (and aren't stripped
+    to space). The operator rule "preserve French spacing" then falls out
+    naturally — `MONDE!` and `MONDE !` end up as distinct normalised strings.
     """
     if not text:
         return ""
@@ -176,12 +201,13 @@ def normalize(text: str, level: str = "strict") -> str:
         raise ValueError(f"unknown normalization level: {level!r}")
 
     t = unicodedata.normalize("NFC", text)
-    t = _pre_clean(t)
+    t = _pre_clean(t, lang=lang)
     t = remove_brand_names(t)
     t = t.lower()
     if level == "soft":
         t = _remove_placeholders(t)
-    t = _STRIP_STRICT_RE.sub(" ", t)
+    strip_re = _STRIP_STRICT_FR_RE if (lang or "").lower() == "fr" else _STRIP_STRICT_RE
+    t = strip_re.sub(" ", t)
     return _collapse_whitespace(t)
 
 
@@ -211,18 +237,19 @@ def has_placeholder(text: str) -> bool:
     return False
 
 
-def clean_for_display(text: str) -> str:
+def clean_for_display(text: str, lang: Optional[str] = None) -> str:
     """Clean text for UI display.
 
     - Removes emoji, arrows, bullets, BiDi marks, brand names.
     - Removes only whitelisted placeholder tokens.
     - Preserves CTA text like <BUY TOKENS>, <PLAY NOW>, [here].
     - Collapses extra blank lines.
+    - `lang='fr'` preserves the French guillemets `« »` (typography signal).
     """
     if not text:
         return ""
     text = unicodedata.normalize("NFC", text)
-    text = _pre_clean(text)
+    text = _pre_clean(text, lang=lang)
     text = remove_brand_names(text)
     text = _remove_placeholders_for_display(text)
     lines = [" ".join(line.split()) for line in text.splitlines()]
