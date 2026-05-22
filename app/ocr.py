@@ -292,12 +292,11 @@ def google_batch_annotate_images(image_bytes_list: list, google_mode: Optional[s
 
 # ─────────────────────────── Azure OCR ───────────────────────────────────────
 
-def _ocr_azure(image_bytes: bytes) -> Optional[tuple]:
-    """Return (text, confidence) or None on failure."""
-    endpoint = os.getenv("AZURE_OCR_ENDPOINT", "").rstrip("/")
-    key = os.getenv("AZURE_OCR_KEY", "")
-    if not endpoint or not key:
-        return None
+AZURE_MAX_ATTEMPTS = 2  # initial + 1 retry (per operator feedback 2026-05)
+
+
+def _ocr_azure_once(image_bytes: bytes, endpoint: str, key: str, attempt: int) -> Optional[tuple]:
+    """Single Azure attempt. Returns (text, avg_conf) or None on failure or empty response."""
     url = f"{endpoint}/computervision/imageanalysis:analyze"
     # Azure OCR target: Image Analysis 4.0 Read.
     # Example stable api-version is 2024-02; exact value is environment-configurable
@@ -324,13 +323,32 @@ def _ocr_azure(image_bytes: bytes) -> Optional[tuple]:
                     if conf is not None:
                         confidences.append(conf)
         if not lines_text:
+            logger.info("Azure OCR empty response (attempt %d)", attempt)
             return None
         text = "\n".join(lines_text).strip()
         avg_conf = sum(confidences) / len(confidences) if confidences else None
         return (text, avg_conf)
     except Exception as exc:
-        logger.warning("Azure OCR exception: %s", exc)
+        logger.warning("Azure OCR exception (attempt %d): %s", attempt, exc)
         return None
+
+
+def _ocr_azure(image_bytes: bytes) -> Optional[tuple]:
+    """Return (text, confidence) or None on failure, with one retry on empty/exception.
+
+    Operators observed Azure intermittently returning no response for small crops;
+    a single retry recovers most of those cases at negligible cost.
+    """
+    endpoint = os.getenv("AZURE_OCR_ENDPOINT", "").rstrip("/")
+    key = os.getenv("AZURE_OCR_KEY", "")
+    if not endpoint or not key:
+        return None
+    for attempt in range(1, AZURE_MAX_ATTEMPTS + 1):
+        result = _ocr_azure_once(image_bytes, endpoint, key, attempt)
+        if result is not None:
+            return result
+    logger.warning("Azure OCR gave up after %d attempts", AZURE_MAX_ATTEMPTS)
+    return None
 
 
 # ─────────────────────────── OCR.Space ───────────────────────────────────────
@@ -369,6 +387,13 @@ def _ocr_ocrspace_once(api_key, mime, img_b64, attempt):
             return None
         text = parsed[0].get("ParsedText", "").strip()
         if not text:
+            return None
+        # OCR.Space sometimes returns punctuation-only garbage on tight crops
+        # (e.g. long runs of `#` or `.`) that wins consensus by length and
+        # poisons downstream comparison. Treat any response without a single
+        # letter or digit as a non-response.
+        if not any(ch.isalnum() for ch in text):
+            logger.info("OCR.Space punctuation-only response (attempt %d), discarding", attempt)
             return None
         return (text, None)
     except Exception as exc:
