@@ -146,9 +146,30 @@ def normalize(text: str, level: str = "strict") -> str:
         return ""
 
     if level == "consensus":
+        # Replace any unicode punctuation (Unicode category "P*") with a
+        # space, EXCEPT the placeholder-syntax characters we deliberately
+        # preserve for engine-vs-engine comparison: `<>[]%`. Then collapse
+        # whitespace so removing punctuation doesn't leave double spaces.
+        #
+        # Why punct→space rather than punct→empty: Azure sometimes prefixes
+        # banner-headline lines with markdown `#`, `##`, `###`. Stripping
+        # those to empty leaves trailing/multiple internal spaces, which
+        # made Azure's normalised text differ from Google's/OCR.Space's by
+        # whitespace alone — triggering `no_confidence_fallback` and MANUAL
+        # `engines_disagree` on otherwise-identical OCR outputs.
         t = text.lower()
+        out_chars = []
+        for ch in t:
+            if ch in ("<", ">", "[", "]", "%", "`"):
+                out_chars.append(ch)
+            elif ch.isspace():
+                out_chars.append(" ")
+            elif unicodedata.category(ch).startswith("P"):
+                out_chars.append(" ")
+            else:
+                out_chars.append(ch)
+        t = "".join(out_chars)
         t = re.sub(r"\s+", " ", t)
-        t = _CONSENSUS_PUNCT_RE.sub("", t)
         return t.strip()
 
     if level not in ("strict", "soft"):
