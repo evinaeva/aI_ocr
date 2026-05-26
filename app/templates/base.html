@@ -7,6 +7,33 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/style.css">
+  <style>
+    /* Pipeline toggle: OCR LLM (existing) | OCR local (banner_qa CV pipeline) */
+    .mode-toggle {
+      display: inline-flex;
+      border: 1px solid var(--border, #2e3147);
+      border-radius: 10px;
+      overflow: hidden;
+      margin-left: auto;
+    }
+    .mode-toggle a {
+      padding: 6px 14px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--text-secondary, #8892a4);
+      text-decoration: none;
+      transition: background 0.15s, color 0.15s;
+    }
+    .mode-toggle a + a { border-left: 1px solid var(--border, #2e3147); }
+    .mode-toggle a.active {
+      background: var(--accent, #6c63ff);
+      color: white;
+    }
+    .mode-toggle a:not(.active):hover {
+      background: var(--card-hover, #1f2233);
+      color: var(--text, #e2e8f0);
+    }
+  </style>
   {% block extra_head %}{% endblock %}
 </head>
 <body class="{% block body_class %}{% endblock %}">
@@ -22,6 +49,16 @@
           <a href="/templates" class="header-link">Templates</a>
           <a href="/about" class="header-link">About</a>
         </nav>
+        <div class="mode-toggle" role="tablist" aria-label="Pipeline">
+          <a href="/"
+             class="{% if active_mode != 'ocr_local' %}active{% endif %}"
+             title="3-engine OCR + LLM (this is the default flow)"
+             role="tab">OCR LLM</a>
+          <a href="/banner"
+             class="{% if active_mode == 'ocr_local' %}active{% endif %}"
+             title="CV-only banner text QA (no LLM)"
+             role="tab">OCR local</a>
+        </div>
         {% block header_actions %}{% endblock %}
       </div>
     </header>

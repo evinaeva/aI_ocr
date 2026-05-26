@@ -58,6 +58,14 @@ from .section_matcher import extract_sections, select_best
 from .version import APP_VERSION, BUILD_TIME_UTC, get_build_info
 from .zip_processor import build_zip_manifest, process_zip
 
+# Banner QA (CV-only, no LLM) — sibling pipeline accessible under /banner.
+# The router is loaded lazily-safe: importing this module pulls in PIL +
+# numpy + cv2 + skimage, but easyocr/torch are only touched on the first
+# detect call, so the OCR-LLM flow is unaffected even if torch isn't
+# installed in the image yet.
+from .banner_qa.routes import banner_router, DEFAULT_THRESHOLD as BANNER_DEFAULT_THRESHOLD
+from .banner_qa.fonts import CATALOG as BANNER_FONT_CATALOG
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -178,6 +186,7 @@ app.include_router(preview_router)
 app.include_router(run_router)
 app.include_router(batch_router)  # P2.4: v2-batch job orchestration (additive)
 app.include_router(phase2_router)
+app.include_router(banner_router)  # /api/banner/* — local CV pipeline (no LLM)
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 
 _sse_queues: Dict[str, asyncio.Queue] = {}
@@ -473,6 +482,33 @@ async def template_run_page(request: Request, template_name: str):
         {
             "request": request,
             "template_name": template_name,
+        },
+    )
+
+
+def _banner_font_catalog() -> dict:
+    """{family: [weights]} for the banner_run page dropdowns."""
+    out: dict = {}
+    for spec in BANNER_FONT_CATALOG:
+        if not spec.exists():
+            continue
+        out.setdefault(spec.family, []).append(spec.weight)
+    return out
+
+
+@app.get("/banner", response_class=HTMLResponse)
+async def banner_run_page(request: Request):
+    """Local (CV-only) banner QA. Sibling of the OCR LLM flow at "/".
+
+    Active when the "OCR local" toggle is clicked in the header.
+    """
+    return templates.TemplateResponse(
+        "banner_run.html",
+        {
+            "request": request,
+            "active_mode": "ocr_local",
+            "font_catalog": _banner_font_catalog(),
+            "threshold": BANNER_DEFAULT_THRESHOLD,
         },
     )
 

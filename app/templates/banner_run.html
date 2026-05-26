@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% set active_mode = 'ocr_local' %}
+{% block title %}Banner Runner — OCR local{% endblock %}
+
+{% block extra_head %}
+<style>
+  /* banner-runner form layout (small extension to the lifted style.css) */
+  .run-form { display: flex; flex-direction: column; gap: 16px; }
+  .form-row { display: flex; flex-direction: column; gap: 6px; }
+  .form-row.two-col { flex-direction: row; gap: 16px; }
+  .form-row.two-col > label { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .form-row > label { display: flex; flex-direction: column; gap: 6px; }
+  .form-row .label {
+    font-size: 0.75rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.4px;
+    color: var(--text-secondary);
+  }
+  .form-row input[type="text"],
+  .form-row input[type="number"],
+  .form-row textarea,
+  .form-row select {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font: inherit;
+    font-family: var(--mono);
+    font-size: 0.85rem;
+  }
+  .form-row input:focus,
+  .form-row textarea:focus,
+  .form-row select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  #spinner { display: none; margin-left: 12px; color: var(--text-secondary); }
+  .run-meta { padding: 12px 0; }
+  .run-meta code { font-family: var(--mono); color: var(--text); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-card card">
+  <h2>Banner Text QA</h2>
+  <p class="card-hint">
+    Upload one banner image + the reference text it should contain. We detect
+    text blocks (CRAFT), render the reference in the chosen font, and compare
+    skeletons. A block is flagged when its score drops below {{ threshold }}.
+  </p>
+
+  <form id="qa-form" class="run-form" onsubmit="return false;">
+    <div class="form-row">
+      <label>
+        <span class="label">Banner image</span>
+        <input type="file" id="image-input" accept="image/png,image/jpeg,image/webp" required>
+      </label>
+    </div>
+
+    <div class="form-row">
+      <label>
+        <span class="label">Reference text</span>
+        <textarea id="ref-input" rows="2" placeholder="Exact text the banner should contain, e.g. WELCOME OFFER" required></textarea>
+      </label>
+    </div>
+
+    <div class="form-row two-col">
+      <label>
+        <span class="label">Font family</span>
+        <select id="family-input" required></select>
+      </label>
+      <label>
+        <span class="label">Font weight</span>
+        <select id="weight-input" required></select>
+      </label>
+    </div>
+
+    <div class="form-row two-col">
+      <label>
+        <span class="label">Language (optional)</span>
+        <input type="text" id="lang-input" placeholder="e.g. en, fr, de" maxlength="8">
+      </label>
+      <label>
+        <span class="label">Threshold (optional)</span>
+        <input type="number" id="threshold-input" step="0.01" min="0" max="1" placeholder="{{ threshold }}">
+      </label>
+    </div>
+
+    <div class="form-row">
+      <button class="btn btn-primary" id="run-btn" type="button" onclick="runBannerQA()">Run QA</button>
+      <span id="spinner">⏳ Running…</span>
+    </div>
+  </form>
+
+  <div id="alert-error" class="alert alert-error"></div>
+
+  <div id="results-section">
+    <div class="run-meta" id="run-meta"></div>
+    <div id="blocks-container"></div>
+  </div>
+</div>
+
+<script>
+  const FONT_CATALOG = {{ font_catalog | tojson }};
+  const DEFAULT_THRESHOLD = {{ threshold }};
+</script>
+<script src="/static/banner_run.js"></script>
+{% endblock %}

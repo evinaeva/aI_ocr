@@ -10,3 +10,8 @@ Pillow==11.1.0
 google-cloud-firestore==2.19.0
 google-cloud-storage==2.18.2
 opencv-python-headless==4.10.0.84
+
+# Banner QA (CV-only pipeline at /banner). easyocr is installed in a
+# separate Dockerfile layer because it pulls in PyTorch (~2GB).
+numpy>=1.26
+scikit-image>=0.22
